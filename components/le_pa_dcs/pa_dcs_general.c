@@ -7,10 +7,11 @@
  */
 //--------------------------------------------------------------------------------------------------
 
-#include <arpa/inet.h>
 #include "legato.h"
 #include "interfaces.h"
 #include "pa_dcs.h"
+#include <arpa/inet.h>
+#include <time.h>
 
 
 //--------------------------------------------------------------------------------------------------
@@ -18,15 +19,14 @@
  * Maximal length of a system command
  */
 //--------------------------------------------------------------------------------------------------
-#define MAX_SYSTEM_CMD_LENGTH       512
+#define MAX_SYSTEM_CMD_LENGTH           512
 
 //--------------------------------------------------------------------------------------------------
 /**
- * Buffer to store resolv.conf cache
+ * Maximal length of a system command output
  */
 //--------------------------------------------------------------------------------------------------
-static char ResolvConfBuffer[256];
-
+#define MAX_SYSTEM_CMD_OUTPUT_LENGTH    1024
 
 //--------------------------------------------------------------------------------------------------
 /**
@@ -35,6 +35,12 @@ static char ResolvConfBuffer[256];
 //--------------------------------------------------------------------------------------------------
 #define ROUTE_FILE "/proc/net/route"
 
+//--------------------------------------------------------------------------------------------------
+/**
+ * Buffer to store resolv.conf cache
+ */
+//--------------------------------------------------------------------------------------------------
+static char ResolvConfBuffer[256];
 
 //--------------------------------------------------------------------------------------------------
 /**
@@ -43,7 +49,7 @@ static char ResolvConfBuffer[256];
  * @return File content in a statically allocated string (shouldn't be freed)
  */
 //--------------------------------------------------------------------------------------------------
-static char*  ReadResolvConf
+static char* ReadResolvConf
 (
     void
 )
@@ -283,7 +289,6 @@ static le_result_t DeleteDefaultGateway
     return LE_OK;
 }
 
-
 //--------------------------------------------------------------------------------------------------
 /**
  * Write the DNS configuration into /etc/resolv.conf
@@ -435,7 +440,6 @@ static le_result_t AddNameserversToResolvConf
     return LE_OK;
 }
 
-
 //--------------------------------------------------------------------------------------------------
 /**
  * Set the DNS configuration
@@ -453,9 +457,6 @@ le_result_t pa_dcs_SetDnsNameServers
 {
     return AddNameserversToResolvConf(dns1Ptr, dns2Ptr);
 }
-
-
-
 
 //--------------------------------------------------------------------------------------------------
 /**
@@ -686,8 +687,6 @@ void pa_dcs_SaveDefaultGateway
     }
 }
 
-
-
 //--------------------------------------------------------------------------------------------------
 /**
  * Used the data backup upon connection to remove DNS entries locally added
@@ -727,6 +726,89 @@ void pa_dcs_RestoreInitialDnsNameServers
         memset(interfaceDataBackupPtr->newDnsIPv6[1], '\0',
                sizeof(interfaceDataBackupPtr->newDnsIPv6[1]));
     }
+}
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * Retrieve time from a server using the Time Protocol.
+ *
+ * @return
+ *      - LE_OK             Function successful
+ *      - LE_BAD_PARAMETER  A parameter is incorrect
+ *      - LE_FAULT          Function failed
+ */
+//--------------------------------------------------------------------------------------------------
+le_result_t pa_dcs_GetTimeWithTimeProtocol
+(
+    const char* serverStrPtr,       ///< [IN]  Time server
+    pa_dcs_TimeStruct_t* timePtr    ///< [OUT] Time structure
+)
+{
+    le_result_t result = LE_FAULT;
+    FILE* fp;
+    char systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
+    char output[MAX_SYSTEM_CMD_OUTPUT_LENGTH];
+    struct tm tm = {0};
+
+    if ((!serverStrPtr) || ('\0' == serverStrPtr[0]) || (!timePtr))
+    {
+        LE_ERROR("Incorrect parameter");
+        return LE_BAD_PARAMETER;
+    }
+
+    // Use rdate
+    snprintf(systemCmd, sizeof(systemCmd), "/usr/sbin/rdate -p %s", serverStrPtr);
+    fp = popen(systemCmd, "r");
+    if (!fp)
+    {
+        LE_ERROR("Failed to run command '%s' (%m)", systemCmd);
+        return LE_FAULT;
+    }
+
+    // Retrieve output
+    while ((NULL != fgets(output, sizeof(output)-1, fp)) && (LE_OK != result))
+    {
+        if (NULL != strptime(output, "%a %b %d %H:%M:%S %Y", &tm))
+        {
+            timePtr->msec = 0;
+            timePtr->sec  = tm.tm_sec;
+            timePtr->min  = tm.tm_min;
+            timePtr->hour = tm.tm_hour;
+            timePtr->day  = tm.tm_mday;
+            timePtr->mon  = tm.tm_mon;
+            timePtr->year = 1900 + tm.tm_year;
+            result = LE_OK;
+        }
+    }
+
+    pclose(fp);
+    return result;
+}
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * Retrieve time from a server using the Network Time Protocol.
+ *
+ * @return
+ *      - LE_OK             Function successful
+ *      - LE_BAD_PARAMETER  A parameter is incorrect
+ *      - LE_FAULT          Function failed
+ */
+//--------------------------------------------------------------------------------------------------
+le_result_t pa_dcs_GetTimeWithNetworkTimeProtocol
+(
+    const char* serverStrPtr,       ///< [IN]  Time server
+    pa_dcs_TimeStruct_t* timePtr    ///< [OUT] Time structure
+)
+{
+    if ((!serverStrPtr) || ('\0' == serverStrPtr[0]) || (!timePtr))
+    {
+        LE_ERROR("Incorrect parameter");
+        return LE_BAD_PARAMETER;
+    }
+
+    // ntpdate is not supported yet
+    return LE_FAULT;
 }
 
 

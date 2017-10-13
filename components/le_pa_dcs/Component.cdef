@@ -1,6 +1,6 @@
 sources:
 {
-    pa_dcs_general.c
+    pa_dcs_linux.c
 }
 
 cflags:

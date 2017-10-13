@@ -736,6 +736,7 @@ void pa_dcs_RestoreInitialDnsNameServers
  *      - LE_OK             Function successful
  *      - LE_BAD_PARAMETER  A parameter is incorrect
  *      - LE_FAULT          Function failed
+ *      - LE_UNSUPPORTED    Function not supported by the target
  */
 //--------------------------------------------------------------------------------------------------
 le_result_t pa_dcs_GetTimeWithTimeProtocol
@@ -793,6 +794,7 @@ le_result_t pa_dcs_GetTimeWithTimeProtocol
  *      - LE_OK             Function successful
  *      - LE_BAD_PARAMETER  A parameter is incorrect
  *      - LE_FAULT          Function failed
+ *      - LE_UNSUPPORTED    Function not supported by the target
  */
 //--------------------------------------------------------------------------------------------------
 le_result_t pa_dcs_GetTimeWithNetworkTimeProtocol
@@ -808,9 +810,8 @@ le_result_t pa_dcs_GetTimeWithNetworkTimeProtocol
     }
 
     // ntpdate is not supported yet
-    return LE_FAULT;
+    return LE_UNSUPPORTED;
 }
-
 
 //--------------------------------------------------------------------------------------------------
 /**

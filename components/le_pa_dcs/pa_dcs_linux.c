@@ -776,7 +776,7 @@ le_result_t pa_dcs_GetTimeWithTimeProtocol
             timePtr->min  = tm.tm_min;
             timePtr->hour = tm.tm_hour;
             timePtr->day  = tm.tm_mday;
-            timePtr->mon  = tm.tm_mon;
+            timePtr->mon  = 1 + tm.tm_mon; // Convert month range to [1..12]
             timePtr->year = 1900 + tm.tm_year;
             result = LE_OK;
         }

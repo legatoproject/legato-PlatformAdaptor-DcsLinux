@@ -30,6 +30,13 @@
 
 //--------------------------------------------------------------------------------------------------
 /**
+ * Maximal length of an IPv4/v6 address
+ */
+//--------------------------------------------------------------------------------------------------
+#define IPADDR_MAX_LEN 46
+
+//--------------------------------------------------------------------------------------------------
+/**
  * The linux system file to read for default gateway
  */
 //--------------------------------------------------------------------------------------------------
@@ -106,55 +113,6 @@ static char* ReadResolvConf
                 strlen(fileContentPtr), fileSz );
 
     return fileContentPtr;
-}
-
-//--------------------------------------------------------------------------------------------------
-/**
- * Check if a default gateway is set
- *
- * @return
- *      True or False
- */
-//--------------------------------------------------------------------------------------------------
-static bool IsDefaultGatewayPresent
-(
-    void
-)
-{
-    bool        result = false;
-    le_result_t openResult;
-    FILE*       routeFile;
-    char        line[100] , *ifacePtr , *destPtr, *gwPtr, *saveptr;
-
-    routeFile = le_flock_OpenStream(ROUTE_FILE , LE_FLOCK_READ, &openResult);
-
-    if (NULL == routeFile)
-    {
-        LE_WARN("le_flock_OpenStream failed with error %d", openResult);
-        return result;
-    }
-
-    while (fgets(line, sizeof(line), routeFile))
-    {
-        ifacePtr = strtok_r(line, " \t", &saveptr);
-        destPtr  = strtok_r(NULL, " \t", &saveptr);
-        gwPtr    = strtok_r(NULL, " \t", &saveptr);
-
-        if ((NULL != ifacePtr) && (NULL != destPtr))
-        {
-            if (0 == strcmp(destPtr, "00000000"))
-            {
-                if (gwPtr)
-                {
-                    result = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    le_flock_CloseStream(routeFile);
-    return result;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -253,37 +211,6 @@ static le_result_t RemoveNameserversFromResolvConf
     {
         LE_WARN("fclose failed");
         return LE_FAULT;
-    }
-
-    return LE_OK;
-}
-
-//--------------------------------------------------------------------------------------------------
-/**
- * Delete the default gateway in the system, if it is present
- *
- * return
- *      LE_OK           Function succeed
- *      LE_FAULT        Function failed
- */
-//--------------------------------------------------------------------------------------------------
-static le_result_t DeleteDefaultGateway
-(
-    void
-)
-{
-    char systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
-
-    if (IsDefaultGatewayPresent())
-    {
-        // Remove the last default GW
-        snprintf(systemCmd, sizeof(systemCmd), "/sbin/route del default");
-        LE_DEBUG("Execute '%s'", systemCmd);
-        if (-1 == system(systemCmd))
-        {
-            LE_WARN("system '%s' failed", systemCmd);
-            return LE_FAULT;
-        }
     }
 
     return LE_OK;
@@ -510,12 +437,15 @@ le_result_t pa_dcs_ChangeRoute
 (
     pa_dcs_RouteAction_t   routeAction,
     const char*            ipDestAddrStrPtr,
+    const char*            ipDestMaskStrPtr,
     const char*            interfaceStrPtr
 )
 {
     const char optionPtr[] = "-A inet";
     char actionStr[MAX_SYSTEM_CMD_LENGTH] = {0};
     char systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
+    char destMaskStr[IPADDR_MAX_LEN] = {0};
+    char *addNetStr = "";
 
     switch (routeAction)
     {
@@ -528,12 +458,25 @@ le_result_t pa_dcs_ChangeRoute
             break;
 
         default:
-            LE_ERROR("Unknown action %d", routeAction);
+            LE_ERROR("Unknown action %d", (uint16_t)routeAction);
             return LE_FAULT;
     }
 
-    snprintf(systemCmd, sizeof(systemCmd), "/sbin/route %s %s %s dev %s",
-             optionPtr, actionStr, ipDestAddrStrPtr, interfaceStrPtr);
+    if (strlen(ipDestMaskStrPtr) > 0)
+    {
+        addNetStr = "-net";
+        snprintf(destMaskStr, sizeof(destMaskStr), "netmask %s", ipDestMaskStrPtr);
+    }
+
+    // The command line to be formulated below will look like this for adding a route:
+    // When ipDestMaskStrPtr is a null string, it'll be adding a host route and the command is:
+    //     /sbin/route -A inet add <addr> dev <interface>
+    //
+    // When ipDestMaskStrPtr is not null, it'll be adding a network route and the command becomes:
+    //     /sbin/route -A inet add -net <addr> netmask <mask> dev <interface>
+    //
+    snprintf(systemCmd, sizeof(systemCmd), "/sbin/route %s %s %s %s %s dev %s",
+             optionPtr, actionStr, addNetStr, ipDestAddrStrPtr, destMaskStr, interfaceStrPtr);
     LE_DEBUG("Execute '%s'", systemCmd);
     if (-1 == system(systemCmd))
     {
@@ -569,7 +512,7 @@ le_result_t pa_dcs_SetDefaultGateway
         return LE_FAULT;
     }
 
-    if (LE_OK != DeleteDefaultGateway())
+    if (LE_OK != pa_dcs_DeleteDefaultGateway())
     {
         LE_ERROR("Unable to delete default gateway");
         return LE_FAULT;
@@ -600,7 +543,7 @@ le_result_t pa_dcs_SetDefaultGateway
  * Save the default route
  */
 //--------------------------------------------------------------------------------------------------
-void pa_dcs_SaveDefaultGateway
+le_result_t pa_dcs_GetDefaultGateway
 (
     pa_dcs_InterfaceDataBackup_t* interfaceDataBackupPtr
 )
@@ -614,7 +557,7 @@ void pa_dcs_SaveDefaultGateway
     if (NULL == routeFile)
     {
         LE_ERROR("Could not open file %s", ROUTE_FILE);
-        return;
+        return LE_FAULT;
     }
 
     // Initialize default value
@@ -678,13 +621,62 @@ void pa_dcs_SaveDefaultGateway
             break;
 
         case LE_NOT_FOUND:
-            LE_DEBUG("No default gateway to save");
+            LE_DEBUG("No default gateway to retrieve");
             break;
 
         default:
-            LE_WARN("Could not save the default gateway");
+            LE_WARN("Could not retrieve the default gateway");
             break;
     }
+    return result;
+}
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * Check if a default gateway is set
+ *
+ * @return
+ *      True or False
+ */
+//--------------------------------------------------------------------------------------------------
+static bool IsDefaultGatewayPresent
+(
+    void
+)
+{
+    pa_dcs_InterfaceDataBackup_t backup;
+    return (LE_OK == pa_dcs_GetDefaultGateway(&backup));
+}
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * Delete the default gateway in the system, if it is present
+ *
+ * return
+ *      LE_OK           Function succeed
+ *      LE_FAULT        Function failed
+ */
+//--------------------------------------------------------------------------------------------------
+le_result_t pa_dcs_DeleteDefaultGateway
+(
+    void
+)
+{
+    char systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
+
+    if (IsDefaultGatewayPresent())
+    {
+        // Remove the last default GW
+        snprintf(systemCmd, sizeof(systemCmd), "/sbin/route del default");
+        LE_DEBUG("Execute '%s'", systemCmd);
+        if (-1 == system(systemCmd))
+        {
+            LE_WARN("system '%s' failed", systemCmd);
+            return LE_FAULT;
+        }
+    }
+
+    return LE_OK;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -812,6 +804,55 @@ le_result_t pa_dcs_GetTimeWithNetworkTimeProtocol
     // ntpdate is not supported yet
     return LE_UNSUPPORTED;
 }
+
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * Query for a connection's network interface state
+ *
+ * @return
+ *      - LE_OK             Function successful
+ *      - LE_BAD_PARAMETER  A parameter is incorrect
+ *      - LE_FAULT          Function failed
+ *      - LE_UNSUPPORTED    Function not supported by the target
+ */
+//--------------------------------------------------------------------------------------------------
+le_result_t pa_dcs_GetInterfaceState
+(
+    const char *interface,  ///< [IN] network interface name
+    bool *stateIsUp         ///< [OUT] interface state down/up as false/true
+)
+{
+    le_result_t result = LE_FAULT;
+    FILE* fp;
+    char systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
+    char output[MAX_SYSTEM_CMD_OUTPUT_LENGTH];
+
+    *stateIsUp = false;
+    snprintf(systemCmd, sizeof(systemCmd), "/sbin/ip address show dev %s", interface);
+    fp = popen(systemCmd, "r");
+    if (!fp)
+    {
+        LE_ERROR("Failed to run command '%s' (%m) to get interface state", systemCmd);
+        return LE_FAULT;
+    }
+
+    // Retrieve output
+    while (NULL != fgets(output, sizeof(output)-1, fp))
+    {
+        if (strstr(output, "inet"))
+        {
+            *stateIsUp = true;
+            break;
+        }
+    }
+
+    result = LE_OK;
+    pclose(fp);
+    LE_DEBUG("Interface %s in state %s", interface, (*stateIsUp) ? "up" : "down");
+    return result;
+}
+
 
 //--------------------------------------------------------------------------------------------------
 /**

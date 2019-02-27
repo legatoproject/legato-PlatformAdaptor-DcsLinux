@@ -540,7 +540,14 @@ le_result_t pa_dcs_SetDefaultGateway
 
 //--------------------------------------------------------------------------------------------------
 /**
- * Save the default route
+ * Save the default route into the input data structure provided
+ * ToDo: Need to add code to support IPv6 default GW
+ *
+ * @return
+ *     - LE_OK if the retrieval of default GW address(es) has been successful
+ *     - LE_NOT_FOUND if no currently set default GW address has been found
+ *     - LE_FAULT if the attempt to retrieve has failed
+ *     - LE_OVERFLOW if the address to be retrieved has exceeded in length the provided buffer's
  */
 //--------------------------------------------------------------------------------------------------
 le_result_t pa_dcs_GetDefaultGateway
@@ -666,12 +673,28 @@ le_result_t pa_dcs_DeleteDefaultGateway
 
     if (IsDefaultGatewayPresent())
     {
-        // Remove the last default GW
+        le_result_t v4Ret = LE_OK, v6Ret = LE_OK;
+        // Remove the last IPv4 default GW
         snprintf(systemCmd, sizeof(systemCmd), "/sbin/route del default");
         LE_DEBUG("Execute '%s'", systemCmd);
         if (-1 == system(systemCmd))
         {
             LE_WARN("system '%s' failed", systemCmd);
+            v4Ret = LE_FAULT;
+        }
+
+        // Remove the last IPv6 default GW
+        snprintf(systemCmd, sizeof(systemCmd), "/sbin/route -A inet6 del default");
+        LE_DEBUG("Execute '%s'", systemCmd);
+        if (-1 == system(systemCmd))
+        {
+            LE_WARN("system '%s' failed", systemCmd);
+            v6Ret = LE_FAULT;
+        }
+
+        // Return fault if both none of IPv4 and IPv6 default GW config deletions succeeded
+        if ((v4Ret != LE_OK) && (v6Ret != LE_OK))
+        {
             return LE_FAULT;
         }
     }
@@ -693,6 +716,9 @@ void pa_dcs_RestoreInitialDnsNameServers
         || ('\0' != interfaceDataBackupPtr->newDnsIPv4[1][0])
        )
     {
+        LE_DEBUG("Removing IPv4 DNS server addresses %s & %s from device",
+                 interfaceDataBackupPtr->newDnsIPv4[0],
+                 interfaceDataBackupPtr->newDnsIPv4[1]);
         RemoveNameserversFromResolvConf(
                                  interfaceDataBackupPtr->newDnsIPv4[0],
                                  interfaceDataBackupPtr->newDnsIPv4[1]);
@@ -708,6 +734,9 @@ void pa_dcs_RestoreInitialDnsNameServers
         || ('\0' != interfaceDataBackupPtr->newDnsIPv6[1][0])
        )
     {
+        LE_DEBUG("Removing IPv6 DNS server addresses %s & %s from device",
+                 interfaceDataBackupPtr->newDnsIPv6[0],
+                 interfaceDataBackupPtr->newDnsIPv6[1]);
         RemoveNameserversFromResolvConf(
                                  interfaceDataBackupPtr->newDnsIPv6[0],
                                  interfaceDataBackupPtr->newDnsIPv6[1]);

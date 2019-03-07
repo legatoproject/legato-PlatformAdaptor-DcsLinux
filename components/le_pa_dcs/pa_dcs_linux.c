@@ -426,7 +426,33 @@ le_result_t pa_dcs_AskForIpAddress
 
 //--------------------------------------------------------------------------------------------------
 /**
- * Executes change route
+ * Validate IPv4/v6 address format
+ *
+ * @return
+ *      - LE_OK     on success
+ *      - LE_FAULT  on failure
+ */
+//--------------------------------------------------------------------------------------------------
+static le_result_t pa_dcs_ValidateIpAddress
+(
+    int af,             ///< Address family
+    const char* addStr  ///< IP address to check
+)
+{
+    struct sockaddr_in6 sa;
+
+    if (inet_pton(af, addStr, &(sa.sin6_addr)))
+    {
+        return LE_OK;
+    }
+    return LE_FAULT;
+}
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * Executes change route. It adds or removes a route, according to the input action flag, in the
+ * first argument for the given destination address and subnet (IPv4 netmask or IPv6 prefix length)
+ * onto the given network interface in the last argument.
  *
  * return
  *      LE_OK           Function succeed
@@ -437,24 +463,38 @@ le_result_t pa_dcs_ChangeRoute
 (
     pa_dcs_RouteAction_t   routeAction,
     const char*            ipDestAddrStrPtr,
-    const char*            ipDestMaskStrPtr,
+    const char*            ipDestSubnetStrPtr,
     const char*            interfaceStrPtr
 )
 {
-    const char optionPtr[] = "-A inet";
-    char actionStr[MAX_SYSTEM_CMD_LENGTH] = {0};
-    char systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
-    char destMaskStr[IPADDR_MAX_LEN] = {0};
-    char *addNetStr = "";
+    char *optionPtr, *actionStr, systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
+    char destStr[IPADDR_MAX_LEN * 2] = {0};
+    bool isIPv6 = false;
+    int16_t systemResult;
+
+    if (LE_OK == pa_dcs_ValidateIpAddress(AF_INET6, ipDestAddrStrPtr))
+    {
+        isIPv6 = true;
+        optionPtr = "-A inet6";
+    }
+    else if (LE_OK == pa_dcs_ValidateIpAddress(AF_INET, ipDestAddrStrPtr))
+    {
+        optionPtr = "-A inet";
+    }
+    else
+    {
+        LE_ERROR("Invalid IP address format in %s", ipDestAddrStrPtr);
+        return LE_FAULT;
+    }
 
     switch (routeAction)
     {
         case PA_DCS_ROUTE_ADD:
-            snprintf(actionStr, sizeof(actionStr), "add");
+            actionStr = "add";
             break;
 
         case PA_DCS_ROUTE_DELETE:
-            snprintf(actionStr, sizeof(actionStr), "del");
+            actionStr = "del";
             break;
 
         default:
@@ -462,25 +502,46 @@ le_result_t pa_dcs_ChangeRoute
             return LE_FAULT;
     }
 
-    if (strlen(ipDestMaskStrPtr) > 0)
+    // The command line to be formulated below will look like the following:
+    // When ipDestSubnetStrPtr is not a null string, it's a network route change.
+    // The command to run for IPv4 becomes:
+    //     /sbin/route -A inet add -net <addr> netmask <subnet> dev <interface>
+    // for IPv6 becomes:
+    //     /sbin/route -A inet6 add <addr>/<prefixLength> dev <interface>
+    //
+    // When ipDestSubnetStrPtr is a null string, it's a host route change.
+    // The command to run for IPv4 becomes:
+    //     /sbin/route -A inet add <addr> dev <interface>
+    // for IPv6 becomes:
+    //     /sbin/route -A inet6 add <addr> dev <interface>
+    //
+    if (ipDestSubnetStrPtr && (strlen(ipDestSubnetStrPtr) > 0))
     {
-        addNetStr = "-net";
-        snprintf(destMaskStr, sizeof(destMaskStr), "netmask %s", ipDestMaskStrPtr);
+        // Adding a network route
+        if (isIPv6)
+        {
+            snprintf(destStr, sizeof(destStr), "%s/%s", ipDestAddrStrPtr, ipDestSubnetStrPtr);
+        }
+        else
+        {
+            snprintf(destStr, sizeof(destStr), "-net %s netmask %s", ipDestAddrStrPtr,
+                     ipDestSubnetStrPtr);
+        }
+        snprintf(systemCmd, sizeof(systemCmd), "/sbin/route %s %s %s dev %s", optionPtr, actionStr,
+                 destStr, interfaceStrPtr);
+    }
+    else
+    {
+        // Adding a host route
+        snprintf(systemCmd, sizeof(systemCmd), "/sbin/route %s %s %s dev %s",
+                 optionPtr, actionStr, ipDestAddrStrPtr, interfaceStrPtr);
     }
 
-    // The command line to be formulated below will look like this for adding a route:
-    // When ipDestMaskStrPtr is a null string, it'll be adding a host route and the command is:
-    //     /sbin/route -A inet add <addr> dev <interface>
-    //
-    // When ipDestMaskStrPtr is not null, it'll be adding a network route and the command becomes:
-    //     /sbin/route -A inet add -net <addr> netmask <mask> dev <interface>
-    //
-    snprintf(systemCmd, sizeof(systemCmd), "/sbin/route %s %s %s %s %s dev %s",
-             optionPtr, actionStr, addNetStr, ipDestAddrStrPtr, destMaskStr, interfaceStrPtr);
     LE_DEBUG("Execute '%s'", systemCmd);
-    if (-1 == system(systemCmd))
+    systemResult = system(systemCmd);
+    if ((-1 == systemResult) || (0 !=WEXITSTATUS(systemResult)))
     {
-        LE_WARN("system '%s' failed", systemCmd);
+        LE_WARN("system '%s' failed; execution result: %d", systemCmd, systemResult);
         return LE_FAULT;
     }
 

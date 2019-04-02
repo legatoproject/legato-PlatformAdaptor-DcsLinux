@@ -527,14 +527,23 @@ le_result_t pa_dcs_ChangeRoute
             snprintf(destStr, sizeof(destStr), "-net %s netmask %s", ipDestAddrStrPtr,
                      ipDestSubnetStrPtr);
         }
-        snprintf(systemCmd, sizeof(systemCmd), "/sbin/route %s %s %s dev %s", optionPtr, actionStr,
-                 destStr, interfaceStrPtr);
+
+        if (snprintf(systemCmd, sizeof(systemCmd), "/sbin/route %s %s %s dev %s",
+                     optionPtr, actionStr, destStr, interfaceStrPtr)
+            >= sizeof(systemCmd))
+        {
+            goto truncated;
+        }
     }
     else
     {
         // Adding a host route
-        snprintf(systemCmd, sizeof(systemCmd), "/sbin/route %s %s %s dev %s",
-                 optionPtr, actionStr, ipDestAddrStrPtr, interfaceStrPtr);
+        if (snprintf(systemCmd, sizeof(systemCmd), "/sbin/route %s %s %s dev %s",
+                     optionPtr, actionStr, ipDestAddrStrPtr, interfaceStrPtr)
+            >= sizeof(systemCmd))
+        {
+            goto truncated;
+        }
     }
 
     LE_DEBUG("Execute '%s'", systemCmd);
@@ -546,6 +555,10 @@ le_result_t pa_dcs_ChangeRoute
     }
 
     return LE_OK;
+
+truncated:
+    LE_DEBUG("Truncated system command '%s' not executed.", systemCmd);
+    return LE_FAULT;
 }
 
 //--------------------------------------------------------------------------------------------------

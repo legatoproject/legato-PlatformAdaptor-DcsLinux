@@ -714,7 +714,9 @@ le_result_t pa_dcs_GetDefaultGateway
 
 //--------------------------------------------------------------------------------------------------
 /**
- * Check if a default gateway is set
+ * Check if a default gateway is set.
+ * Currently it supports IPv4 only since that's what pa_dcs_GetDefaultGateway() supports. When the
+ * latter supports IPv6 as well, its support will be added back here too.
  *
  * @return
  *      True or False
@@ -722,11 +724,20 @@ le_result_t pa_dcs_GetDefaultGateway
 //--------------------------------------------------------------------------------------------------
 static bool IsDefaultGatewayPresent
 (
-    void
+    bool *v4Present,
+    bool *v6Present
 )
 {
+    le_result_t ret;
     pa_dcs_InterfaceDataBackup_t backup;
-    return (LE_OK == pa_dcs_GetDefaultGateway(&backup));
+    *v4Present = *v6Present = false;
+    ret = pa_dcs_GetDefaultGateway(&backup);
+    if (ret == LE_OK)
+    {
+        *v4Present = (strlen(backup.defaultGateway) > 0);
+        return LE_OK;
+    }
+    return LE_FAULT;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -734,8 +745,8 @@ static bool IsDefaultGatewayPresent
  * Delete the default gateway in the system, if it is present
  *
  * return
- *      LE_OK           Function succeed
- *      LE_FAULT        Function failed
+ *      LE_OK           Function succeeded in deleting a default GW config
+ *      LE_FAULT        Function failed in deleting any default GW config
  */
 //--------------------------------------------------------------------------------------------------
 le_result_t pa_dcs_DeleteDefaultGateway
@@ -744,33 +755,45 @@ le_result_t pa_dcs_DeleteDefaultGateway
 )
 {
     char systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
+    le_result_t v4Ret = LE_OK, v6Ret = LE_OK;
+    bool v4GwPresent, v6GwPresent;
+    int16_t systemResult;
 
-    if (IsDefaultGatewayPresent())
+    if (!IsDefaultGatewayPresent(&v4GwPresent, &v6GwPresent))
     {
-        le_result_t v4Ret = LE_OK, v6Ret = LE_OK;
+        return LE_FAULT;
+    }
+
+    if (v4GwPresent)
+    {
         // Remove the last IPv4 default GW
         snprintf(systemCmd, sizeof(systemCmd), "/sbin/route del default");
         LE_DEBUG("Execute '%s'", systemCmd);
-        if (-1 == system(systemCmd))
+        systemResult = system(systemCmd);
+        if ((-1 == systemResult) ||  (0 != WEXITSTATUS(systemResult)))
         {
             LE_WARN("system '%s' failed", systemCmd);
             v4Ret = LE_FAULT;
         }
+    }
 
+    if (v6GwPresent)
+    {
         // Remove the last IPv6 default GW
         snprintf(systemCmd, sizeof(systemCmd), "/sbin/route -A inet6 del default");
         LE_DEBUG("Execute '%s'", systemCmd);
-        if (-1 == system(systemCmd))
+        systemResult = system(systemCmd);
+        if ((-1 == systemResult) ||  (0 != WEXITSTATUS(systemResult)))
         {
             LE_WARN("system '%s' failed", systemCmd);
             v6Ret = LE_FAULT;
         }
+    }
 
-        // Return fault if both none of IPv4 and IPv6 default GW config deletions succeeded
-        if ((v4Ret != LE_OK) && (v6Ret != LE_OK))
-        {
-            return LE_FAULT;
-        }
+    // Return fault if none of IPv4 and IPv6 default GW config deletions succeeded
+    if ((v4Ret != LE_OK) && (v6Ret != LE_OK))
+    {
+        return LE_FAULT;
     }
 
     return LE_OK;

@@ -406,7 +406,7 @@ le_result_t pa_dcs_AskForIpAddress
     snprintf(systemCmd,
              sizeof(systemCmd),
              "PATH=/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin;"
-             "/sbin/udhcpc -R -b -i %s",
+             "/sbin/udhcpc -R -b -i %s 2>&1",
              interfaceStrPtr
             );
 

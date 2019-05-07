@@ -411,17 +411,14 @@ le_result_t pa_dcs_AskForIpAddress
             );
 
     systemResult = system(systemCmd);
-    // Return value of -1 means that the fork() has failed (see man system)
-    if (0 == WEXITSTATUS(systemResult))
-    {
-        LE_INFO("DHCP client successful!");
-        return LE_OK;
-    }
-    else
+    if ((!WIFEXITED(systemResult)) || (0 != WEXITSTATUS(systemResult)))
     {
         LE_ERROR("DHCP client failed: command %s, result %d", systemCmd, systemResult);
         return LE_FAULT;
     }
+
+    LE_INFO("DHCP client successful!");
+    return LE_OK;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -548,7 +545,7 @@ le_result_t pa_dcs_ChangeRoute
 
     LE_DEBUG("Execute '%s'", systemCmd);
     systemResult = system(systemCmd);
-    if ((-1 == systemResult) || (0 !=WEXITSTATUS(systemResult)))
+    if ((!WIFEXITED(systemResult)) || (0 != WEXITSTATUS(systemResult)))
     {
         LE_WARN("system '%s' failed; execution result: %d", systemCmd, systemResult);
         return LE_FAULT;
@@ -579,6 +576,7 @@ le_result_t pa_dcs_SetDefaultGateway
 {
     const char* optionPtr = "";
     char        systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
+    int         systemResult;
 
     if ((0 == strcmp(gatewayPtr, "")) || (0 == strcmp(interfacePtr, "")))
     {
@@ -603,7 +601,8 @@ le_result_t pa_dcs_SetDefaultGateway
     snprintf(systemCmd, sizeof(systemCmd), "/sbin/route %s add default gw %s %s",
              optionPtr, gatewayPtr, interfacePtr);
     LE_DEBUG("Execute '%s'", systemCmd);
-    if (-1 == system(systemCmd))
+    systemResult = system(systemCmd);
+    if ((!WIFEXITED(systemResult)) || (0 != WEXITSTATUS(systemResult)))
     {
         LE_WARN("system '%s' failed", systemCmd);
         return LE_FAULT;
@@ -757,7 +756,7 @@ le_result_t pa_dcs_DeleteDefaultGateway
     char systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
     le_result_t v4Ret = LE_OK, v6Ret = LE_OK;
     bool v4GwPresent, v6GwPresent;
-    int16_t systemResult;
+    int systemResult;
 
     if (!IsDefaultGatewayPresent(&v4GwPresent, &v6GwPresent))
     {
@@ -770,7 +769,7 @@ le_result_t pa_dcs_DeleteDefaultGateway
         snprintf(systemCmd, sizeof(systemCmd), "/sbin/route del default");
         LE_DEBUG("Execute '%s'", systemCmd);
         systemResult = system(systemCmd);
-        if ((-1 == systemResult) ||  (0 != WEXITSTATUS(systemResult)))
+        if ((!WIFEXITED(systemResult)) || (0 != WEXITSTATUS(systemResult)))
         {
             LE_WARN("system '%s' failed", systemCmd);
             v4Ret = LE_FAULT;
@@ -783,7 +782,7 @@ le_result_t pa_dcs_DeleteDefaultGateway
         snprintf(systemCmd, sizeof(systemCmd), "/sbin/route -A inet6 del default");
         LE_DEBUG("Execute '%s'", systemCmd);
         systemResult = system(systemCmd);
-        if ((-1 == systemResult) ||  (0 != WEXITSTATUS(systemResult)))
+        if ((!WIFEXITED(systemResult)) || (0 != WEXITSTATUS(systemResult)))
         {
             LE_WARN("system '%s' failed", systemCmd);
             v6Ret = LE_FAULT;

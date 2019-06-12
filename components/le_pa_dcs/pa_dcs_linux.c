@@ -44,6 +44,13 @@
 
 //--------------------------------------------------------------------------------------------------
 /**
+ * The linux system file to read for default gateway
+ */
+//--------------------------------------------------------------------------------------------------
+#define DHCP_LEASE_FILE_PATH "/var/run/udhcpc.%s.leases"
+
+//--------------------------------------------------------------------------------------------------
+/**
  * Buffer to store resolv.conf cache
  */
 //--------------------------------------------------------------------------------------------------
@@ -365,6 +372,47 @@ static le_result_t AddNameserversToResolvConf
     }
 
     return LE_OK;
+}
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * Returns DHCP lease file path
+ *
+ * @return
+ *      LE_OVERFLOW     Destination buffer too small and output will be truncated
+ *      LE_UNSUPPORTED  If not supported by OS
+ *      LE_FAULT        Function has failed
+ *      LE_OK           Function has succeed
+ */
+//--------------------------------------------------------------------------------------------------
+LE_SHARED le_result_t pa_dcs_GetDhcpLeaseFilePath
+(
+    const char*  interfaceStrPtr,   ///< [IN] Pointer on the interface name
+    char*        pathPtr,           ///< [OUT] Output 1 pointer
+    size_t       bufferSize         ///< [IN]  Size of buffer
+)
+{
+    int retVal = snprintf(pathPtr,
+                          bufferSize,
+                          DHCP_LEASE_FILE_PATH,
+                          interfaceStrPtr
+                         );
+
+    if (retVal < 0)
+    {
+        *pathPtr = '\0';
+        LE_ERROR("Failed writing lease file path");
+        return LE_FAULT;
+    }
+    else if (retVal >= bufferSize)
+    {
+        LE_ERROR("Lease file path was truncated");
+        return LE_OVERFLOW;
+    }
+    else
+    {
+        return LE_OK;
+    }
 }
 
 //--------------------------------------------------------------------------------------------------

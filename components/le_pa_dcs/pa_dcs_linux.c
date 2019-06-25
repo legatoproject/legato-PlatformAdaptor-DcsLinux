@@ -586,8 +586,7 @@ le_result_t pa_dcs_SetDefaultGateway
 
     if (LE_OK != pa_dcs_DeleteDefaultGateway())
     {
-        LE_ERROR("Unable to delete default gateway");
-        return LE_FAULT;
+        LE_WARN("Unable to delete default gateway");
     }
 
     LE_DEBUG("Try set the gateway '%s' on '%s'", gatewayPtr, interfacePtr);
@@ -758,7 +757,7 @@ le_result_t pa_dcs_DeleteDefaultGateway
     bool v4GwPresent, v6GwPresent;
     int systemResult;
 
-    if (!IsDefaultGatewayPresent(&v4GwPresent, &v6GwPresent))
+    if (IsDefaultGatewayPresent(&v4GwPresent, &v6GwPresent) != LE_OK)
     {
         return LE_FAULT;
     }

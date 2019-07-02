@@ -68,6 +68,34 @@
 
 //--------------------------------------------------------------------------------------------------
 /**
+ * Command to retrieve PID of DHCP running specific network interface
+ */
+//--------------------------------------------------------------------------------------------------
+#define COMMAND_GET_DHCP_PID "/bin/ps -ax | grep dhcp | grep %s"
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * Command to terminate process with specific PID
+ */
+//--------------------------------------------------------------------------------------------------
+#define COMMAND_TERMINATE_PID "/bin/kill %s"
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * Command to kill process with specific PID
+ */
+//--------------------------------------------------------------------------------------------------
+#define COMMAND_KILL_PID "/bin/kill -9 %s"
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * Retry times
+ */
+//--------------------------------------------------------------------------------------------------
+#define RETRY   3
+
+//--------------------------------------------------------------------------------------------------
+/**
  * Buffer to store resolv.conf cache
  */
 //--------------------------------------------------------------------------------------------------
@@ -559,7 +587,11 @@ static le_result_t SetDhcpcEnvironment
 {
     le_result_t result = LE_OK;
     char udhcpFileName[UDHCPC_OPTION_FILE_NAME_MAX_LENGTH], systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
-
+    if (!variable)
+    {
+        LE_ERROR("Bad parameter!");
+        return LE_FAULT;
+    }
     snprintf(systemCmd, sizeof(systemCmd), "source %s; echo $%s",
              PLATFORM_ENVIRONMENT_VARIABLE_FILE, variable);
     FILE *fp = popen(systemCmd, "r");
@@ -645,6 +677,82 @@ le_result_t pa_dcs_AskForIpAddress
 
     LE_INFO("DHCP client successful!");
     return LE_OK;
+}
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * Stop DHCP running specific network interface
+ *
+ * @return
+ *      - LE_OK             Function successful
+ *      - LE_BAD_PARAMETER  Invalid parameter
+ *      - LE_FAULT          Function failed
+ */
+//--------------------------------------------------------------------------------------------------
+
+le_result_t pa_dcs_StopDhcp
+(
+    const char *interface   ///< [IN] Network interface name
+)
+{
+    FILE*   fp;
+    char*   pid;
+    int     systemResult;
+    char*   outputReentrant;
+    char    systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
+    char    output[MAX_SYSTEM_CMD_OUTPUT_LENGTH] = {0};
+    int     retry = 0;
+    le_result_t result = LE_OK;
+
+    if (NULL == interface)
+    {
+        LE_ERROR("Invalid parameter");
+        return LE_BAD_PARAMETER;
+    }
+
+    snprintf(systemCmd, sizeof(systemCmd), COMMAND_GET_DHCP_PID, interface);
+    fp = popen(systemCmd, "r");
+    if(!fp)
+    {
+        LE_ERROR("Failed to run command '%s' (%m) to get interface state", systemCmd);
+        return LE_FAULT;
+    }
+
+    while (NULL != fgets(output, sizeof(output)-1, fp))
+    {
+        // Retrieve PID of DHCP running specific interface
+        outputReentrant = output;
+        pid = strtok_r(outputReentrant, " ", &outputReentrant);
+        if (NULL == pid)
+        {
+            LE_DEBUG("Failed to retrieve PID of DHCP running interface %s", interface);
+        }
+        else
+        {
+            //Kill the retrieved PID
+            snprintf(systemCmd, sizeof(systemCmd), COMMAND_TERMINATE_PID, pid);
+            systemResult = system(systemCmd);
+            while (((!WIFEXITED(systemResult)) || (0 != WEXITSTATUS(systemResult)))
+                   && (retry <= RETRY))
+            {
+                retry++;
+                sleep(1 << retry);
+                systemResult = system(systemCmd);
+            }
+            if (!WIFEXITED(systemResult) || (0 != WEXITSTATUS(systemResult)))
+            {
+                snprintf(systemCmd, sizeof(systemCmd), COMMAND_KILL_PID, pid);
+                systemResult = system(systemCmd);
+                if (!WIFEXITED(systemResult) || (0 != WEXITSTATUS(systemResult)))
+                {
+                    LE_WARN("system '%s' failed", systemCmd);
+                    result = LE_FAULT;
+                }
+            }
+        }
+    }
+    pclose(fp);
+    return result;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1170,7 +1278,8 @@ le_result_t pa_dcs_GetTimeWithNetworkTimeProtocol
 le_result_t pa_dcs_GetInterfaceState
 (
     const char *interface,  ///< [IN] network interface name
-    bool *stateIsUp         ///< [OUT] interface state down/up as false/true
+    bool *ipv4IsUp,         ///< [INOUT] IPV4 is not assigned/assigned as false/true
+    bool *ipv6IsUp          ///< [INOUT] IPV6 is not assigned/assigned as false/true
 )
 {
     le_result_t result = LE_FAULT;
@@ -1178,7 +1287,14 @@ le_result_t pa_dcs_GetInterfaceState
     char systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
     char output[MAX_SYSTEM_CMD_OUTPUT_LENGTH];
 
-    *stateIsUp = false;
+    if ((!interface) || (!ipv4IsUp) || (!ipv6IsUp))
+    {
+        LE_ERROR("Invalid parameter");
+        return LE_BAD_PARAMETER;
+    }
+
+    *ipv4IsUp = false;
+    *ipv6IsUp = false;
     snprintf(systemCmd, sizeof(systemCmd), "/sbin/ip address show dev %s", interface);
     fp = popen(systemCmd, "r");
     if (!fp)
@@ -1190,16 +1306,21 @@ le_result_t pa_dcs_GetInterfaceState
     // Retrieve output
     while (NULL != fgets(output, sizeof(output)-1, fp))
     {
-        if (strstr(output, "inet"))
+        if (strstr(output, "inet6"))
         {
-            *stateIsUp = true;
-            break;
+            *ipv6IsUp = true;
+        }
+        else if (strstr(output, "inet"))
+        {
+            *ipv4IsUp = true;
         }
     }
 
     result = LE_OK;
     pclose(fp);
-    LE_DEBUG("Interface %s in state %s", interface, (*stateIsUp) ? "up" : "down");
+    LE_DEBUG("Interface %s in state: IPV4 %s, IPV6 %s", interface,
+             (*ipv4IsUp) ? "up" : "down",
+             (*ipv6IsUp) ? "up" : "down");
     return result;
 }
 

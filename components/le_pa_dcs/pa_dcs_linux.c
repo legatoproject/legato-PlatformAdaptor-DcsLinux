@@ -44,6 +44,23 @@
 
 //--------------------------------------------------------------------------------------------------
 /**
+ * The linux system file $PLATFORM_ENVIRONMENT_VARIABLE_FILE with the environment settings
+ * necessary to set before running udhcpc on Linux, as well as the environment variable
+ * $UDHCPC_DEFAULT_ROUTE_VARIABLE_NAME that contains the udhcpc file name for use with udhcpc
+ * that determines to always set a default route on the interface where udhcpc completes running
+ * or not, i.e. skip such default route setting if this $$UDHCPC_DEFAULT_ROUTE_VARIABLE_NAME file
+ * is present.
+ * UDHCPC_OPTION_FILE_NAME_MAX_LENGTH is the max length of the name of a udhcpc option file, e.g.
+ * /tmp/udhcpc_keep_default_route & /tmp/udhcpc_keep_default_resolv which lenghts are in the 30s.
+ */
+//--------------------------------------------------------------------------------------------------
+#define PLATFORM_ENVIRONMENT_VARIABLE_FILE "/etc/run.env"
+#define UDHCPC_DEFAULT_ROUTE_VARIABLE_NAME "UDHCPC_KEEP_DEFAULT_ROUTE"
+#define UDHCPC_DEFAULT_RESOLV_VARIABLE_NAME "UDHCPC_KEEP_DEFAULT_RESOLV"
+#define UDHCPC_OPTION_FILE_NAME_MAX_LENGTH 50
+
+//--------------------------------------------------------------------------------------------------
+/**
  * The linux system file to read for default gateway
  */
 //--------------------------------------------------------------------------------------------------
@@ -228,8 +245,10 @@ static le_result_t RemoveNameserversFromResolvConf
  * Write the DNS configuration into /etc/resolv.conf
  *
  * @return
- *      LE_FAULT        Function failed
  *      LE_OK           Function succeed
+ *      LE_DUPLICATE    Function found no need to add as the given inputs are already set in
+ *      LE_UNSUPPORTED  Function not supported by the target
+ *      LE_FAULT        Function failed
  */
 //--------------------------------------------------------------------------------------------------
 static le_result_t AddNameserversToResolvConf
@@ -266,12 +285,12 @@ static le_result_t AddNameserversToResolvConf
 
                 if (NULL != strstr(currentLinePtr, dns1Ptr))
                 {
-                    LE_DEBUG("DNS 1 '%s' found in file", dns1Ptr);
+                    LE_INFO("DNS 1 '%s' found in file", dns1Ptr);
                     addDns1 = false;
                 }
                 else if (NULL != strstr(currentLinePtr, dns2Ptr))
                 {
-                    LE_DEBUG("DNS 2 '%s' found in file", dns2Ptr);
+                    LE_INFO("DNS 2 '%s' found in file", dns2Ptr);
                     addDns2 = false;
                 }
 
@@ -296,7 +315,8 @@ static le_result_t AddNameserversToResolvConf
     if (!addDns1 && !addDns2)
     {
         // No need to change the file
-        return LE_OK;
+        LE_DEBUG("No need to change the file");
+        return LE_DUPLICATE;
     }
 
     FILE*  resolvConfPtr;
@@ -420,8 +440,10 @@ LE_SHARED le_result_t pa_dcs_GetDhcpLeaseFilePath
  * Set the DNS configuration
  *
  * @return
- *      LE_FAULT        Function failed
  *      LE_OK           Function succeed
+ *      LE_DUPLICATE    Function found no need to add as the given inputs are already set in
+ *      LE_UNSUPPORTED  Function not supported by the target
+ *      LE_FAULT        Function failed
  */
 //--------------------------------------------------------------------------------------------------
 le_result_t pa_dcs_SetDnsNameServers
@@ -431,6 +453,66 @@ le_result_t pa_dcs_SetDnsNameServers
 )
 {
     return AddNameserversToResolvConf(dns1Ptr, dns2Ptr);
+}
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * Set up a udhcpc environment variable/file before running it. The resulting setting will be used
+ * by its script in /etc/udhcpc.d/50default
+ *
+ * @return
+ *      LE_FAULT        Function failed
+ *      LE_OK           Function succeed
+ */
+//--------------------------------------------------------------------------------------------------
+static le_result_t SetDhcpcEnvironment
+(
+    const char *variable
+)
+{
+    int16_t systemResult;
+    char udhcpFileName[UDHCPC_OPTION_FILE_NAME_MAX_LENGTH], systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
+    snprintf(systemCmd, sizeof(systemCmd), "source %s; echo $%s",
+             PLATFORM_ENVIRONMENT_VARIABLE_FILE, variable);
+    FILE *fp = popen(systemCmd, "r");
+    if (!fp)
+    {
+        LE_ERROR("Failed to read environment variables in system file %s",
+                 PLATFORM_ENVIRONMENT_VARIABLE_FILE);
+    }
+    else
+    {
+        if (!fgets(udhcpFileName, sizeof(udhcpFileName), fp) || (strlen(udhcpFileName) <= 0))
+        {
+            LE_DEBUG("No environment variable $%s set for udhcpc option file", variable);
+        }
+        else
+        {
+            // The system file for specifying udhcpc's default option is defined. Thus, here
+            // ensure its presence, by touching it, to opt to skip changing the default behavior
+            // on the target after DHCP negotiation has succeeded
+            uint16_t length = strlen(udhcpFileName);
+            if ((udhcpFileName[length-1] == EOF) || (udhcpFileName[length-1] == '\n'))
+            {
+                // Strip off the EOF or line feed character at the end
+                udhcpFileName[length-1] = '\0';
+            }
+            snprintf(systemCmd, sizeof(systemCmd), "/bin/touch %s 2>&1", udhcpFileName);
+            systemResult = system(systemCmd);
+            if ((!WIFEXITED(systemResult)) || (0 != WEXITSTATUS(systemResult)))
+            {
+                LE_ERROR("Failed to initialize udhcpc option file: command %s, result %d",
+                         systemCmd, systemResult);
+                fclose(fp);
+                return LE_FAULT;
+            }
+            LE_INFO("File %s set to skip changing the default behavior after udhcpc negotiation",
+                    udhcpFileName);
+        }
+        fclose(fp);
+    }
+
+    return LE_OK;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -447,17 +529,29 @@ le_result_t pa_dcs_AskForIpAddress
     const char*    interfaceStrPtr
 )
 {
+    le_result_t result;
     int16_t systemResult;
     char systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
 
-    // DHCP Client
-    snprintf(systemCmd,
-             sizeof(systemCmd),
-             "PATH=/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin;"
-             "/sbin/udhcpc -R -b -i %s 2>&1",
-             interfaceStrPtr
-            );
+    // Set up the udhcpc environment to skip the auto-installation of a default route onto the
+    // interface with the default GW address given through the succeeded DHCP negotiation
+    result = SetDhcpcEnvironment(UDHCPC_DEFAULT_ROUTE_VARIABLE_NAME);
+    if (LE_OK != result)
+    {
+        return result;
+    }
 
+    // Set up the udhcpc environment to skip the auto-insertion of the DNS server addresses
+    // given through the succeeded DHCP negotiation into the system's /etc/resolv.conf file
+    result = SetDhcpcEnvironment(UDHCPC_DEFAULT_RESOLV_VARIABLE_NAME);
+    if (LE_OK != result)
+    {
+        return result;
+    }
+
+    // DHCP Client
+    snprintf(systemCmd, sizeof(systemCmd), "PATH=/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin;"
+             "/sbin/udhcpc -R -b -i %s 2>&1", interfaceStrPtr);
     systemResult = system(systemCmd);
     if ((!WIFEXITED(systemResult)) || (0 != WEXITSTATUS(systemResult)))
     {

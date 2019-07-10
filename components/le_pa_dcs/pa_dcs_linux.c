@@ -457,6 +457,93 @@ le_result_t pa_dcs_SetDnsNameServers
 
 //--------------------------------------------------------------------------------------------------
 /**
+ * Create a system file for use with DHCP with the provided name that is given in an absoulte path
+ *
+ * @return
+ *      true   A system file is created with the given file name
+ *      false  Otherwise, due to input error or access permission
+ */
+//--------------------------------------------------------------------------------------------------
+static bool CreateDhcpSystemFile
+(
+    char* fileName
+)
+{
+    FILE* filePtr;
+    mode_t oldMask;
+    bool ret = true;
+
+    // Allow fopen to create file with mode=644
+    oldMask = umask(022);
+
+    // Open & write into the file to force its creation, which is similar to touching the file but
+    // safer than running system command "touch <fileName>" in case fileName might include from
+    // hackers other dangerous commands behind "&&", ";", etc., e.g. fileName =
+    // "/tmp/udhcpc_keep_default_route && rm -rf /legato". Such inputs can't pass fopen(fileName).
+    filePtr = fopen(fileName, "w");
+    if (!filePtr)
+    {
+        LE_ERROR("Invalid name %s to create & open a file with", fileName);
+        umask(oldMask);
+        return false;
+    }
+    if (fprintf(filePtr, "%c", EOF) < 0)
+    {
+        LE_ERROR("Failed to write into file %s", fileName);
+        ret = false;
+    }
+
+    umask(oldMask);
+    if (0 != fclose(filePtr))
+    {
+        LE_WARN("fclose failed");
+        ret = false;
+    }
+
+    return ret;
+}
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * Validate the given file name and strip off any EOF or line feed at its end when found valid
+ *
+ * @return
+ *      true   The given system file name is valid
+ *      false  Otherwise
+ */
+//--------------------------------------------------------------------------------------------------
+static bool ValidateFileName
+(
+    char* fileName
+)
+{
+    uint16_t length;
+    if (!fileName || ((length = strlen(fileName)) <= 0))
+    {
+        LE_ERROR("Invalid file name being blank");
+        return false;
+    }
+    if (fileName[0] != '/')
+    {
+        LE_ERROR("Invalid system file name not in an absolute path");
+        return false;
+    }
+    if (strstr(fileName, "../"))
+    {
+        LE_ERROR("Invalid system file name with ../ included");
+        return false;
+    }
+
+    // Strip off any EOF or line feed character at the end of the file name
+    if ((fileName[length-1] == EOF) || (fileName[length-1] == '\n'))
+    {
+        fileName[length-1] = '\0';
+    }
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+/**
  * Set up a udhcpc environment variable/file before running it. The resulting setting will be used
  * by its script in /etc/udhcpc.d/50default
  *
@@ -470,49 +557,46 @@ static le_result_t SetDhcpcEnvironment
     const char *variable
 )
 {
-    int16_t systemResult;
+    le_result_t result = LE_OK;
     char udhcpFileName[UDHCPC_OPTION_FILE_NAME_MAX_LENGTH], systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
+
     snprintf(systemCmd, sizeof(systemCmd), "source %s; echo $%s",
              PLATFORM_ENVIRONMENT_VARIABLE_FILE, variable);
     FILE *fp = popen(systemCmd, "r");
     if (!fp)
     {
-        LE_ERROR("Failed to read environment variables in system file %s",
-                 PLATFORM_ENVIRONMENT_VARIABLE_FILE);
+        LE_WARN("Failed to read environment variables in system file %s",
+                PLATFORM_ENVIRONMENT_VARIABLE_FILE);
+        return LE_OK;
+    }
+    else if (!fgets(udhcpFileName, sizeof(udhcpFileName), fp))
+    {
+        // This is a valid than an error case
+        LE_DEBUG("No environment variable $%s set for udhcpc option file", variable);
+    }
+    else if (!ValidateFileName(udhcpFileName))
+    {
+        LE_ERROR("Invalid udhcpc option file name in $%s", variable);
+        result = LE_FAULT;
     }
     else
     {
-        if (!fgets(udhcpFileName, sizeof(udhcpFileName), fp) || (strlen(udhcpFileName) <= 0))
+        // The name of the system file for specifying udhcpc's default option is defined. Thus,
+        // create the file with this name to opt out of the default behavior
+        if (!CreateDhcpSystemFile(udhcpFileName))
         {
-            LE_DEBUG("No environment variable $%s set for udhcpc option file", variable);
+            LE_ERROR("Failed to set option file with name %s from %s", udhcpFileName,
+                     PLATFORM_ENVIRONMENT_VARIABLE_FILE);
+            result = LE_FAULT;
         }
         else
         {
-            // The system file for specifying udhcpc's default option is defined. Thus, here
-            // ensure its presence, by touching it, to opt to skip changing the default behavior
-            // on the target after DHCP negotiation has succeeded
-            uint16_t length = strlen(udhcpFileName);
-            if ((udhcpFileName[length-1] == EOF) || (udhcpFileName[length-1] == '\n'))
-            {
-                // Strip off the EOF or line feed character at the end
-                udhcpFileName[length-1] = '\0';
-            }
-            snprintf(systemCmd, sizeof(systemCmd), "/bin/touch %s 2>&1", udhcpFileName);
-            systemResult = system(systemCmd);
-            if ((!WIFEXITED(systemResult)) || (0 != WEXITSTATUS(systemResult)))
-            {
-                LE_ERROR("Failed to initialize udhcpc option file: command %s, result %d",
-                         systemCmd, systemResult);
-                fclose(fp);
-                return LE_FAULT;
-            }
-            LE_INFO("File %s set to skip changing the default behavior after udhcpc negotiation",
-                    udhcpFileName);
+            LE_DEBUG("File %s set to skip changing the default behavior after udhcpc negotiation",
+                     udhcpFileName);
         }
-        fclose(fp);
     }
-
-    return LE_OK;
+    pclose(fp);
+    return result;
 }
 
 //--------------------------------------------------------------------------------------------------

@@ -260,9 +260,8 @@ le_result_t pa_ethernet_GetChannelList
             //WLAN interface reported as Ethernet in ifconfig, skip it
             if (NULL == strstr(interfaceName, WLAN_NAME_PREFIX))
             {
-                strncpy(channelList[listIndex].name, interfaceName, strlen(interfaceName));
+                le_utf8_Copy(channelList[listIndex].name, interfaceName, sizeof(channelList[listIndex].name), NULL);
                 channelList[listIndex].technology = LE_DCS_TECH_ETHERNET;
-                channelList[listIndex].name[LE_DCS_CHANNEL_NAME_MAX_LEN] = '\0';
                 result = pa_ethernet_GetInterfaceState(channelList[listIndex].name,
                                                        &channelList[listIndex].state);
                 if (LE_OK != result)

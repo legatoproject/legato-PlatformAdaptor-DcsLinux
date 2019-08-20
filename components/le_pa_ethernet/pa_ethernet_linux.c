@@ -68,6 +68,13 @@
 
 //--------------------------------------------------------------------------------------------------
 /**
+ * Brigde interface prefix
+ */
+//--------------------------------------------------------------------------------------------------
+#define BRIDGE_NAME_PREFIX   "bridge"
+
+//--------------------------------------------------------------------------------------------------
+/**
  * This event is reported when an Ethernet interface status is updated.
  */
 //--------------------------------------------------------------------------------------------------
@@ -143,8 +150,9 @@ static le_result_t GetTechFromInterface
         }
         else
         {
-            //WLAN interface reported as Ethernet in ifconfig, skip it
-            if (NULL == strstr(interfaceName, WLAN_NAME_PREFIX))
+            // WLAN and bridge interface reported as Ethernet in ifconfig, skip them
+            if (NULL == strstr(interfaceName, WLAN_NAME_PREFIX) &&
+                NULL == strstr(interfaceName, BRIDGE_NAME_PREFIX))
             {
                 result = LE_OK;
             }
@@ -257,10 +265,12 @@ le_result_t pa_ethernet_GetChannelList
         }
         else
         {
-            //WLAN interface reported as Ethernet in ifconfig, skip it
-            if (NULL == strstr(interfaceName, WLAN_NAME_PREFIX))
+            // WLAN and bridge interface reported as Ethernet in ifconfig, skip them
+            if (NULL == strstr(interfaceName, WLAN_NAME_PREFIX) &&
+                NULL == strstr(interfaceName, BRIDGE_NAME_PREFIX))
             {
-                le_utf8_Copy(channelList[listIndex].name, interfaceName, sizeof(channelList[listIndex].name), NULL);
+                le_utf8_Copy(channelList[listIndex].name, interfaceName,
+                             sizeof(channelList[listIndex].name), NULL);
                 channelList[listIndex].technology = LE_DCS_TECH_ETHERNET;
                 result = pa_ethernet_GetInterfaceState(channelList[listIndex].name,
                                                        &channelList[listIndex].state);

@@ -96,6 +96,13 @@
 
 //--------------------------------------------------------------------------------------------------
 /**
+ * Path to the 'ip' tool.
+ */
+//--------------------------------------------------------------------------------------------------
+#define IP_TOOL "/sbin/ip"
+
+//--------------------------------------------------------------------------------------------------
+/**
  * Buffer to store resolv.conf cache
  */
 //--------------------------------------------------------------------------------------------------
@@ -782,7 +789,7 @@ static le_result_t pa_dcs_ValidateIpAddress
 //--------------------------------------------------------------------------------------------------
 /**
  * Executes change route. It adds or removes a route, according to the input action flag, in the
- * first argument for the given destination address and subnet (IPv4 netmask or IPv6 prefix length)
+ * first argument for the given destination address and subnet prefix length
  * onto the given network interface in the last argument.
  *
  * return
@@ -794,23 +801,21 @@ le_result_t pa_dcs_ChangeRoute
 (
     pa_dcs_RouteAction_t   routeAction,
     const char*            ipDestAddrStrPtr,
-    const char*            ipDestSubnetStrPtr,
+    const char*            prefixLengthPtr,
     const char*            interfaceStrPtr
 )
 {
-    char *optionPtr, *actionStr, systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
-    char destStr[IPADDR_MAX_LEN * 2] = {0};
-    bool isIPv6 = false;
+    char *actionStr, systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
+    int ipVersion = 4;
     int16_t systemResult;
 
     if (LE_OK == pa_dcs_ValidateIpAddress(AF_INET6, ipDestAddrStrPtr))
     {
-        isIPv6 = true;
-        optionPtr = "-A inet6";
+        ipVersion = 6;
     }
     else if (LE_OK == pa_dcs_ValidateIpAddress(AF_INET, ipDestAddrStrPtr))
     {
-        optionPtr = "-A inet";
+        ipVersion = 4;
     }
     else
     {
@@ -834,33 +839,23 @@ le_result_t pa_dcs_ChangeRoute
     }
 
     // The command line to be formulated below will look like the following:
-    // When ipDestSubnetStrPtr is not a null string, it's a network route change.
+    // When prefixLengthPtr is not a null string, it's a network route change.
     // The command to run for IPv4 becomes:
-    //     /sbin/route -A inet add -net <addr> netmask <subnet> dev <interface>
+    //     /sbin/ip -4 route add <addr>/<prefixLength> dev <interface>
     // for IPv6 becomes:
-    //     /sbin/route -A inet6 add <addr>/<prefixLength> dev <interface>
+    //     /sbin/ip -6 route add <addr>/<prefixLength> dev <interface>
     //
-    // When ipDestSubnetStrPtr is a null string, it's a host route change.
+    // When prefixLengthPtr is a null string, it's a host route change.
     // The command to run for IPv4 becomes:
-    //     /sbin/route -A inet add <addr> dev <interface>
+    //     /sbin/ip -4 route add <addr> dev <interface>
     // for IPv6 becomes:
-    //     /sbin/route -A inet6 add <addr> dev <interface>
+    //     /sbin/ip -6 route add <addr> dev <interface>
     //
-    if (ipDestSubnetStrPtr && (strlen(ipDestSubnetStrPtr) > 0))
+    if (prefixLengthPtr && (strlen(prefixLengthPtr) > 0))
     {
         // Adding a network route
-        if (isIPv6)
-        {
-            snprintf(destStr, sizeof(destStr), "%s/%s", ipDestAddrStrPtr, ipDestSubnetStrPtr);
-        }
-        else
-        {
-            snprintf(destStr, sizeof(destStr), "-net %s netmask %s", ipDestAddrStrPtr,
-                     ipDestSubnetStrPtr);
-        }
-
-        if (snprintf(systemCmd, sizeof(systemCmd), "/sbin/route %s %s %s dev %s",
-                     optionPtr, actionStr, destStr, interfaceStrPtr)
+        if (snprintf(systemCmd, sizeof(systemCmd), IP_TOOL " -%d route %s %s/%s dev %s",
+                     ipVersion, actionStr, ipDestAddrStrPtr, prefixLengthPtr, interfaceStrPtr)
             >= sizeof(systemCmd))
         {
             goto truncated;
@@ -869,8 +864,8 @@ le_result_t pa_dcs_ChangeRoute
     else
     {
         // Adding a host route
-        if (snprintf(systemCmd, sizeof(systemCmd), "/sbin/route %s %s %s dev %s",
-                     optionPtr, actionStr, ipDestAddrStrPtr, interfaceStrPtr)
+        if (snprintf(systemCmd, sizeof(systemCmd), IP_TOOL " -%d route %s %s dev %s",
+                     ipVersion, actionStr, ipDestAddrStrPtr, interfaceStrPtr)
             >= sizeof(systemCmd))
         {
             goto truncated;
@@ -908,7 +903,7 @@ le_result_t pa_dcs_SetDefaultGateway
     bool        isIpv6          ///< [IN] IPv6 or not
 )
 {
-    const char* optionPtr = "";
+    int         ipVersion = 4;
     char        systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
     int         systemResult;
 
@@ -927,12 +922,12 @@ le_result_t pa_dcs_SetDefaultGateway
 
     if (isIpv6)
     {
-        optionPtr = "-A inet6";
+        ipVersion = 6;
     }
 
     // TODO: use of ioctl instead, should be done when rework the DCS
-    snprintf(systemCmd, sizeof(systemCmd), "/sbin/route %s add default gw %s %s",
-             optionPtr, gatewayPtr, interfacePtr);
+    snprintf(systemCmd, sizeof(systemCmd), IP_TOOL " -%d route add default via %s dev %s",
+             ipVersion, gatewayPtr, interfacePtr);
     LE_DEBUG("Execute '%s'", systemCmd);
     systemResult = system(systemCmd);
     if ((!WIFEXITED(systemResult)) || (0 != WEXITSTATUS(systemResult)))
@@ -1099,7 +1094,7 @@ le_result_t pa_dcs_DeleteDefaultGateway
     if (v4GwPresent)
     {
         // Remove the last IPv4 default GW
-        snprintf(systemCmd, sizeof(systemCmd), "/sbin/route del default");
+        snprintf(systemCmd, sizeof(systemCmd), IP_TOOL " -4 route del default");
         LE_DEBUG("Execute '%s'", systemCmd);
         systemResult = system(systemCmd);
         if ((!WIFEXITED(systemResult)) || (0 != WEXITSTATUS(systemResult)))
@@ -1112,7 +1107,7 @@ le_result_t pa_dcs_DeleteDefaultGateway
     if (v6GwPresent)
     {
         // Remove the last IPv6 default GW
-        snprintf(systemCmd, sizeof(systemCmd), "/sbin/route -A inet6 del default");
+        snprintf(systemCmd, sizeof(systemCmd), IP_TOOL " -6 route del default");
         LE_DEBUG("Execute '%s'", systemCmd);
         systemResult = system(systemCmd);
         if ((!WIFEXITED(systemResult)) || (0 != WEXITSTATUS(systemResult)))
@@ -1295,7 +1290,7 @@ le_result_t pa_dcs_GetInterfaceState
 
     *ipv4IsUp = false;
     *ipv6IsUp = false;
-    snprintf(systemCmd, sizeof(systemCmd), "/sbin/ip address show dev %s", interface);
+    snprintf(systemCmd, sizeof(systemCmd), IP_TOOL " address show dev %s", interface);
     fp = popen(systemCmd, "r");
     if (!fp)
     {

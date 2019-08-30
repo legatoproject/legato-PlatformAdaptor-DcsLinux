@@ -40,7 +40,8 @@
  * The linux system file to read for default gateway
  */
 //--------------------------------------------------------------------------------------------------
-#define ROUTE_FILE "/proc/net/route"
+#define IPV4_ROUTE_FILE "/proc/net/route"
+#define IPV6_ROUTE_FILE "/proc/net/ipv6_route"
 
 //--------------------------------------------------------------------------------------------------
 /**
@@ -107,6 +108,31 @@
  */
 //--------------------------------------------------------------------------------------------------
 static char ResolvConfBuffer[256];
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * Typedef of the function vectors for parsing the default GW address setting on the system which
+ * includes the GW address and the interface/device on which it is set. This is for use by both
+ * IPv4 and IPv6. The result of the config parsing is saved in the last output argument.
+ */
+//--------------------------------------------------------------------------------------------------
+typedef bool (*DefaultGwParserFunc_t)
+(
+    char* line,                  ///< [IN] line of system config to be parsed
+    char* defaultGW,             ///< [OUT] string buffer for the GW address retrieved
+    size_t defaultGWSize,        ///< [IN] size of the buffer provided above
+    char* defaultInterface,      ///< [OUT] string buffer for the interface/device retrieved
+    size_t defaultInterfaceSize, ///< [IN] size of the buffer provided above
+    le_result_t* result          ///< [OUT] output of the config parsing
+);
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * Function prototype
+ */
+//--------------------------------------------------------------------------------------------------
+static le_result_t IsDefaultGatewayPresent(bool *v4Present, bool *v6Present);
+
 
 //--------------------------------------------------------------------------------------------------
 /**
@@ -696,7 +722,6 @@ le_result_t pa_dcs_AskForIpAddress
  *      - LE_FAULT          Function failed
  */
 //--------------------------------------------------------------------------------------------------
-
 le_result_t pa_dcs_StopDhcp
 (
     const char *interface   ///< [IN] Network interface name
@@ -889,6 +914,83 @@ truncated:
 
 //--------------------------------------------------------------------------------------------------
 /**
+ * Delete the default gateway address(es) from the system as indicated by the IPv4/v6 booleans,
+ * and save the corresponding results in the output arguments.
+ * If the caller doesn't select an IP version for default GW deletion, this function won't set its
+ * output result code even when provided.
+ */
+//--------------------------------------------------------------------------------------------------
+static void pa_dcs_DeleteDefaultGateway
+(
+    bool deleteV4Gw,             ///< [IN] To delete default IPv4 GW or not
+    bool deleteV6Gw,             ///< [IN] To delete default IPv6 GW or not
+    le_result_t* resultV4,       ///< [OUT] Result of default IPv4 GW deletion
+    le_result_t* resultV6        ///< [OUT] Result of default IPv6 GW deletion
+)
+{
+    char systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
+    bool v4GwPresent, v6GwPresent;
+    int systemResult;
+
+    // Initiate the result code only if the caller cares about that IP version
+    if (deleteV4Gw && resultV4)
+    {
+        *resultV4 = LE_FAULT;
+    }
+    if (deleteV6Gw && resultV6)
+    {
+        *resultV6 = LE_FAULT;
+    }
+
+    if ((deleteV4Gw && !resultV4) || (deleteV6Gw && !resultV6))
+    {
+        LE_ERROR("Error in input argument being null");
+        return;
+    }
+
+    if (IsDefaultGatewayPresent(&v4GwPresent, &v6GwPresent) != LE_OK)
+    {
+        LE_ERROR("Failed to retrieve present default GW setting");
+        return;
+    }
+
+    if (deleteV4Gw)
+    {
+        *resultV4 = LE_OK;
+        if (v4GwPresent)
+        {
+            // Remove the current default IPv4 GW addr from the system
+            snprintf(systemCmd, sizeof(systemCmd), IP_TOOL " -4 route del default");
+            LE_DEBUG("Execute '%s'", systemCmd);
+            systemResult = system(systemCmd);
+            if ((!WIFEXITED(systemResult)) || (0 != WEXITSTATUS(systemResult)))
+            {
+                LE_WARN("system '%s' failed", systemCmd);
+                *resultV4 = LE_FAULT;
+            }
+        }
+    }
+
+    if (deleteV6Gw)
+    {
+        *resultV6 = LE_OK;
+        if (v6GwPresent)
+        {
+            // Remove the current default IPv6 GW addr from the system
+            snprintf(systemCmd, sizeof(systemCmd), IP_TOOL " -6 route del default");
+            LE_DEBUG("Execute '%s'", systemCmd);
+            systemResult = system(systemCmd);
+            if ((!WIFEXITED(systemResult)) || (0 != WEXITSTATUS(systemResult)))
+            {
+                LE_WARN("system '%s' failed", systemCmd);
+                *resultV6 = LE_FAULT;
+            }
+        }
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+/**
  * Set the default gateway in the system
  *
  * return
@@ -903,27 +1005,25 @@ le_result_t pa_dcs_SetDefaultGateway
     bool        isIpv6          ///< [IN] IPv6 or not
 )
 {
-    int         ipVersion = 4;
+    int         systemResult, ipVersion = isIpv6 ? 6 : 4;
     char        systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
-    int         systemResult;
+    le_result_t v4Result, v6Result;
+
+    pa_dcs_DeleteDefaultGateway(!isIpv6, isIpv6, &v4Result, &v6Result);
+    if ((isIpv6 && (v6Result != LE_OK)) || (!isIpv6 && (v4Result != LE_OK)))
+    {
+        LE_DEBUG("No successful deletion of current default IPv%1d GW address from system",
+                 ipVersion);
+    }
 
     if ((0 == strcmp(gatewayPtr, "")) || (0 == strcmp(interfacePtr, "")))
     {
-        LE_WARN("Default gateway or interface is empty");
-        return LE_FAULT;
+        LE_DEBUG("Skip setting default IPv%1d GW config with either GW addr or interface empty",
+                 ipVersion);
+        return LE_OK;
     }
 
-    if (LE_OK != pa_dcs_DeleteDefaultGateway())
-    {
-        LE_WARN("Unable to delete default gateway");
-    }
-
-    LE_DEBUG("Try set the gateway '%s' on '%s'", gatewayPtr, interfacePtr);
-
-    if (isIpv6)
-    {
-        ipVersion = 6;
-    }
+    LE_DEBUG("Installing default IPv%1d GW '%s' on '%s'", ipVersion, gatewayPtr, interfacePtr);
 
     // TODO: use of ioctl instead, should be done when rework the DCS
     snprintf(systemCmd, sizeof(systemCmd), IP_TOOL " -%d route add default via %s dev %s",
@@ -941,99 +1041,257 @@ le_result_t pa_dcs_SetDefaultGateway
 
 //--------------------------------------------------------------------------------------------------
 /**
- * Save the default route into the input data structure provided
- * ToDo: Need to add code to support IPv6 default GW
+ * Compress a given fully expanded IPv6 address in string format without no : separator, as the
+ * IPv6 addresses shown in the IPv6 route table in /proc/net/ipv6_route to eliminate consecutive
+ * 0s and add back the : separator accordingly
+ *
+ * @return
+ *      true:  Compression of the given IPv6 address has been successfully completed
+ *      false: Otherwise, due to input error
+ */
+//--------------------------------------------------------------------------------------------------
+static bool CompressIPv6String
+(
+    char *ipv6String,
+    size_t stringLen,
+    char* compressedString
+)
+{
+    struct in6_addr sin6_addr;
+    char str[INET6_ADDRSTRLEN] = {0};
+    uint16_t i;
+
+    if ((stringLen != (4 * 8)) && (strstr(ipv6String, ":") != NULL))
+    {
+        // Don't compress as the given ipv6String isn't in the expected format
+        return false;
+    }
+
+    // Add the : separator back before compressing consecutive 0s as shown in ipv6_route, e.g.
+    // 200105696fff1766611fe749f326f0e2 to get 2001:0569:6fff:1766:611f:e749:f326:f0e2
+    for (i=0; i<8; i++)
+    {
+        strncpy(&str[i * 5], &ipv6String[i * 4], 4);
+        str[i * 5 + 4] = ':';
+    }
+    str[i * 5 - 1] = '\0';
+
+    // Compress consecutive 0s via inet_ntop(AF_INETE6,...)
+    inet_pton(AF_INET6, str, &sin6_addr);
+    inet_ntop(AF_INET6, &sin6_addr, compressedString, INET6_ADDRSTRLEN);
+    LE_DEBUG("IPv6 addr %s compressed to %s", ipv6String, compressedString);
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * This is the IPv6 parser function of type DefaultGwParserFunc_t for parsing an output line with
+ * the IPv6 default GW address or route setting on the system and extracting out the GW address and
+ * the interface/device on which it is set to return back to the caller.
+ *
+ * @return
+ *      true:  Info retrieval from the line is done and the caller can quit parsing further lines
+ *      false: Retrieval of wanted info isn't done on this given line that the caller needs to
+ *             continue parsing further lines for the necessary info
+ */
+//--------------------------------------------------------------------------------------------------
+static bool IPv6DefaultGwParseLine
+(
+    char* line,
+    char* defaultGW,
+    size_t defaultGWSize,
+    char* defaultInterface,
+    size_t defaultInterfaceSize,
+    le_result_t* result
+)
+{
+    char *destAddr, *destPrefix, *sourceAddr, *sourcePrefix, *nextHop;
+    char *metric, *refCount, *useCount, *flags, *device, *savePtr;
+    char *blankAddr = "00000000000000000000000000000000";
+    char *blankPrefix = "00";
+
+    if ((defaultGWSize < INET6_ADDRSTRLEN))
+    {
+        *result = LE_OVERFLOW;
+        return false;
+    }
+
+    // The following block extracts info from the given line displayed in the following format
+    // and the order destAddr, destPrefix, sourceAddr, sourcePrefix, nextHop, etc.:
+    //     00000000000000000000000000000000 00 00000000000000000000000000000000 00
+    //         200105696ff8e36fc5b4e5786e0fdf6d 00000400 00000000 00000000 00000003 rmnet_data0
+    destAddr     = strtok_r(line, " \t", &savePtr);
+    destPrefix   = strtok_r(NULL, " \t", &savePtr);
+    sourceAddr   = strtok_r(NULL, " \t", &savePtr);
+    sourcePrefix = strtok_r(NULL, " \t", &savePtr);
+    nextHop      = strtok_r(NULL, " \t", &savePtr);
+    metric       = strtok_r(NULL, " \t", &savePtr);
+    refCount     = strtok_r(NULL, " \t", &savePtr);
+    useCount     = strtok_r(NULL, " \t", &savePtr);
+    flags        = strtok_r(NULL, " \t", &savePtr);
+    device       = strtok_r(NULL, " \t", &savePtr);
+
+    if (!destAddr || !destPrefix || !sourceAddr || !sourcePrefix || !nextHop || !device)
+    {
+        *result = LE_NOT_FOUND;
+        return false;
+    }
+
+    if ((0 == strcmp(destAddr , blankAddr)) && (0 == strcmp(destPrefix , blankPrefix)) &&
+        (0 == strcmp(sourceAddr , blankAddr)) && (0 == strcmp(sourcePrefix , blankPrefix)) &&
+        (0 != strcmp(nextHop, blankAddr)) && (strlen(device) > 0))
+    {
+        // The default GW's entry in the IPv6 route table is denoted by zero destination address
+        // and prefix, zero source address and prefix, and a non-zero next hop with a non-blank
+        // device/interface
+        LE_DEBUG("Default IPv6 GW found: address %s, interface %s", nextHop, device);
+        LE_DEBUG("With metric %s, refCount %s, useCount %s, flags %s", metric, refCount,
+                 useCount, flags);
+
+        if (!CompressIPv6String(nextHop, strlen(nextHop), defaultGW))
+        {
+            LE_WARN("Parsed IPv6 address %s not in expected format", nextHop);
+            *result = LE_FAULT;
+            return false;
+        }
+
+        *result = le_utf8_Copy(defaultInterface, device, defaultInterfaceSize, NULL);
+        if (*result != LE_OK)
+        {
+            LE_WARN("interface buffer too small to save the retrieved");
+        }
+
+        // Return true to let the caller's loop stop parsing further lines
+        return true;
+    }
+
+    *result = LE_NOT_FOUND;
+    return false;
+}
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * This is the IPv4 parser function of type DefaultGwParserFunc_t for parsing an output line with
+ * the IPv6 default GW address or route setting on the system and extracting out the GW address and
+ * the interface/device on which it is set to return back to the caller.
+ *
+ * @return
+ *      true:  Info retrieval from the line is done and the caller can quit parsing further lines
+ *      false: Retrieval of wanted info isn't done on this given line that the caller needs to
+ *             continue parsing further lines for the necessary info
+ */
+//--------------------------------------------------------------------------------------------------
+static bool IPv4DefaultGwParseLine
+(
+    char* line,
+    char* defaultGW,
+    size_t defaultGWSize,
+    char* defaultInterface,
+    size_t defaultInterfaceSize,
+    le_result_t* result
+)
+{
+    char *ifacePtr, *destPtr, *gwPtr, *savePtr, *pEnd;
+    struct in_addr addr;
+
+    // The following block extracts info from the given line displayed in the following format
+    // and the order ifacePtr, destPtr, gwPtr, etc.:
+    //     ecm0 0002A8C0 00000000 0001 0 0 0 00FFFFFF 0 0 0
+    ifacePtr = strtok_r(line, " \t", &savePtr);
+    destPtr  = strtok_r(NULL, " \t", &savePtr);
+    gwPtr    = strtok_r(NULL, " \t", &savePtr);
+
+    if (!ifacePtr || !destPtr || (0 != strcmp(destPtr , "00000000")))
+    {
+        // Return false to let the caller's loop continue parsing the next line
+        *result = LE_NOT_FOUND;
+        return false;
+    }
+
+    if (!gwPtr)
+    {
+        *result = LE_NOT_FOUND;
+        return false;
+    }
+
+    addr.s_addr = (uint32_t)strtoul(gwPtr, &pEnd, 0x10);;
+    *result = le_utf8_Copy(defaultInterface, ifacePtr, defaultInterfaceSize, NULL);
+    if (*result != LE_OK)
+    {
+        LE_WARN("interface buffer too small to save the retrieved");
+        return false;
+    }
+
+    *result = le_utf8_Copy(defaultGW, inet_ntoa(addr), defaultGWSize, NULL);
+    if (*result != LE_OK)
+    {
+        LE_WARN("gateway buffer too small to save the retrieved");
+    }
+
+    // Return true to let the caller's loop stop parsing further lines
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * Retrieve the default route/GW address and the interface on which it is set from the route info
+ * file given in the 1st input argument. This function supports both IPv4 & IPv6 and which one it
+ * is depends on the given routeInfoFile; if it is IPv4, this input is IPV4_ROUTE_FILE; if IPv6,
+ * it is IPV6_ROUTE_FILE.
  *
  * @return
  *     - LE_OK if the retrieval of default GW address(es) has been successful
  *     - LE_NOT_FOUND if no currently set default GW address has been found
  *     - LE_FAULT if the attempt to retrieve has failed
- *     - LE_OVERFLOW if the address to be retrieved has exceeded in length the provided buffer's
+ *     - LE_OVERFLOW if the address retrieved exceeds the provided buffer's length
  */
 //--------------------------------------------------------------------------------------------------
-le_result_t pa_dcs_GetDefaultGateway
+static le_result_t pa_dcs_ParseDefaultGatewaySetting
 (
-    pa_dcs_InterfaceDataBackup_t* interfaceDataBackupPtr
+    char* routeInfoFile,
+    DefaultGwParserFunc_t parserFunc,
+    char* defaultGW,
+    size_t defaultGWSize,
+    char* defaultInterface,
+    size_t defaultInterfaceSize
 )
 {
     le_result_t result;
     FILE*       routeFile;
-    char        line[100] , *ifacePtr , *destPtr, *gwPtr, *saveptr;
+    char        line[200];
 
-    routeFile = le_flock_OpenStream(ROUTE_FILE, LE_FLOCK_READ, &result);
-
+    routeFile = le_flock_OpenStream(routeInfoFile, LE_FLOCK_READ, &result);
     if (NULL == routeFile)
     {
-        LE_ERROR("Could not open file %s", ROUTE_FILE);
+        LE_ERROR("Could not open file %s", routeInfoFile);
         return LE_FAULT;
     }
-
-    // Initialize default value
-    interfaceDataBackupPtr->defaultInterface[0] = '\0';
-    interfaceDataBackupPtr->defaultGateway[0]   = '\0';
 
     result = LE_NOT_FOUND;
 
     while (fgets(line, sizeof(line), routeFile))
     {
-        ifacePtr = strtok_r(line, " \t", &saveptr);
-        destPtr  = strtok_r(NULL, " \t", &saveptr);
-        gwPtr    = strtok_r(NULL, " \t", &saveptr);
-
-        if ((NULL != ifacePtr) && (NULL != destPtr))
+        if (parserFunc(line, defaultGW, defaultGWSize, defaultInterface, defaultInterfaceSize,
+                       &result))
         {
-            if (0 == strcmp(destPtr , "00000000"))
-            {
-                if (gwPtr)
-                {
-                    char*    pEnd;
-                    uint32_t ng=strtoul(gwPtr,&pEnd,16);
-                    struct in_addr addr;
-                    addr.s_addr=ng;
-
-                    result = le_utf8_Copy(
-                               interfaceDataBackupPtr->defaultInterface,
-                               ifacePtr,
-                               sizeof(interfaceDataBackupPtr->defaultInterface),
-                               NULL);
-                    if (result != LE_OK)
-                    {
-                        LE_WARN("interface buffer is too small");
-                        break;
-                    }
-
-                    result = le_utf8_Copy(
-                                 interfaceDataBackupPtr->defaultGateway,
-                                 inet_ntoa(addr),
-                                 sizeof(interfaceDataBackupPtr->defaultGateway),
-                                 NULL);
-                    if (result != LE_OK)
-                    {
-                        LE_WARN("gateway buffer is too small");
-                        break;
-                    }
-                }
-                break;
-            }
+            break;
         }
     }
-
     le_flock_CloseStream(routeFile);
 
     switch (result)
     {
         case LE_OK:
-            LE_DEBUG("default gateway is: '%s' on '%s'",
-                     interfaceDataBackupPtr->defaultGateway,
-                     interfaceDataBackupPtr->defaultInterface);
+            LE_DEBUG("default GW retrieved from %s: '%s' on '%s'", routeInfoFile,
+                     defaultGW, defaultInterface);
             break;
 
         case LE_NOT_FOUND:
-            LE_DEBUG("No default gateway to retrieve");
+            LE_DEBUG("No default GW to retrieve from %s", routeInfoFile);
             break;
 
         default:
-            LE_WARN("Could not retrieve the default gateway");
+            LE_WARN("Could not retrieve default GW from %s", routeInfoFile);
             break;
     }
     return result;
@@ -1041,88 +1299,69 @@ le_result_t pa_dcs_GetDefaultGateway
 
 //--------------------------------------------------------------------------------------------------
 /**
- * Check if a default gateway is set.
- * Currently it supports IPv4 only since that's what pa_dcs_GetDefaultGateway() supports. When the
- * latter supports IPv6 as well, its support will be added back here too.
- *
- * @return
- *      True or False
+ * Save the current default route or GW address setting on the system into the input data structure
+ * provided, as well as the interface on which it is set, including both IPv4 and IPv6
  */
 //--------------------------------------------------------------------------------------------------
-static bool IsDefaultGatewayPresent
+void pa_dcs_GetDefaultGateway
+(
+    pa_dcs_DefaultGwBackup_t* defGwConfigBackupPtr,
+    le_result_t* v4Result,
+    le_result_t* v6Result
+    )
+{
+    if (!defGwConfigBackupPtr || !v4Result || !v6Result)
+    {
+        LE_ERROR("Input errors with null");
+        if (v4Result)
+        {
+            *v4Result = LE_FAULT;
+        }
+        if (v6Result)
+        {
+            *v6Result = LE_FAULT;
+        }
+        return;
+    }
+
+    *v6Result = pa_dcs_ParseDefaultGatewaySetting(
+        IPV6_ROUTE_FILE, IPv6DefaultGwParseLine,
+        defGwConfigBackupPtr->defaultV6GW, sizeof(defGwConfigBackupPtr->defaultV6GW),
+        defGwConfigBackupPtr->defaultV6Interface, sizeof(defGwConfigBackupPtr->defaultV6Interface));
+
+    *v4Result = pa_dcs_ParseDefaultGatewaySetting(
+        IPV4_ROUTE_FILE, IPv4DefaultGwParseLine,
+        defGwConfigBackupPtr->defaultV4GW, sizeof(defGwConfigBackupPtr->defaultV4GW),
+        defGwConfigBackupPtr->defaultV4Interface, sizeof(defGwConfigBackupPtr->defaultV4Interface));
+
+}
+
+//--------------------------------------------------------------------------------------------------
+/**
+ * Check if IPv4 and IPv6 default route or GW address is set.
+ *
+ * @return
+ *     - LE_OK if the retrieval of a default GW address has been successful
+ *     - LE_FAULT if the attempt to retrieve any has failed
+ */
+//--------------------------------------------------------------------------------------------------
+static le_result_t IsDefaultGatewayPresent
 (
     bool *v4Present,
     bool *v6Present
 )
 {
-    le_result_t ret;
-    pa_dcs_InterfaceDataBackup_t backup;
-    *v4Present = *v6Present = false;
-    ret = pa_dcs_GetDefaultGateway(&backup);
-    if (ret == LE_OK)
-    {
-        *v4Present = (strlen(backup.defaultGateway) > 0);
-        return LE_OK;
-    }
-    return LE_FAULT;
-}
-
-//--------------------------------------------------------------------------------------------------
-/**
- * Delete the default gateway in the system, if it is present
- *
- * return
- *      LE_OK           Function succeeded in deleting a default GW config
- *      LE_FAULT        Function failed in deleting any default GW config
- */
-//--------------------------------------------------------------------------------------------------
-le_result_t pa_dcs_DeleteDefaultGateway
-(
-    void
-)
-{
-    char systemCmd[MAX_SYSTEM_CMD_LENGTH] = {0};
-    le_result_t v4Ret = LE_OK, v6Ret = LE_OK;
-    bool v4GwPresent, v6GwPresent;
-    int systemResult;
-
-    if (IsDefaultGatewayPresent(&v4GwPresent, &v6GwPresent) != LE_OK)
+    le_result_t v4ret, v6ret;
+    pa_dcs_DefaultGwBackup_t backup;
+    if (!v4Present || !v6Present)
     {
         return LE_FAULT;
     }
 
-    if (v4GwPresent)
-    {
-        // Remove the last IPv4 default GW
-        snprintf(systemCmd, sizeof(systemCmd), IP_TOOL " -4 route del default");
-        LE_DEBUG("Execute '%s'", systemCmd);
-        systemResult = system(systemCmd);
-        if ((!WIFEXITED(systemResult)) || (0 != WEXITSTATUS(systemResult)))
-        {
-            LE_WARN("system '%s' failed", systemCmd);
-            v4Ret = LE_FAULT;
-        }
-    }
-
-    if (v6GwPresent)
-    {
-        // Remove the last IPv6 default GW
-        snprintf(systemCmd, sizeof(systemCmd), IP_TOOL " -6 route del default");
-        LE_DEBUG("Execute '%s'", systemCmd);
-        systemResult = system(systemCmd);
-        if ((!WIFEXITED(systemResult)) || (0 != WEXITSTATUS(systemResult)))
-        {
-            LE_WARN("system '%s' failed", systemCmd);
-            v6Ret = LE_FAULT;
-        }
-    }
-
-    // Return fault if none of IPv4 and IPv6 default GW config deletions succeeded
-    if ((v4Ret != LE_OK) && (v6Ret != LE_OK))
-    {
-        return LE_FAULT;
-    }
-
+    memset(&backup, 0x0, sizeof(pa_dcs_DefaultGwBackup_t));
+    pa_dcs_GetDefaultGateway(&backup, &v4ret, &v6ret);
+    *v4Present = ((v4ret == LE_OK) && (strlen(backup.defaultV4GW) > 0));
+    *v6Present = ((v6ret == LE_OK) && (strlen(backup.defaultV6GW) > 0));
     return LE_OK;
 }
 
@@ -1133,43 +1372,43 @@ le_result_t pa_dcs_DeleteDefaultGateway
 //--------------------------------------------------------------------------------------------------
 void pa_dcs_RestoreInitialDnsNameServers
 (
-    pa_dcs_InterfaceDataBackup_t* interfaceDataBackupPtr
+    pa_dcs_DnsBackup_t* dnsConfigBackupPtr
 )
 {
-    if (   ('\0' != interfaceDataBackupPtr->newDnsIPv4[0][0])
-        || ('\0' != interfaceDataBackupPtr->newDnsIPv4[1][0])
+    if (   ('\0' != dnsConfigBackupPtr->newDnsIPv4[0][0])
+        || ('\0' != dnsConfigBackupPtr->newDnsIPv4[1][0])
        )
     {
         LE_DEBUG("Removing IPv4 DNS server addresses %s & %s from device",
-                 interfaceDataBackupPtr->newDnsIPv4[0],
-                 interfaceDataBackupPtr->newDnsIPv4[1]);
+                 dnsConfigBackupPtr->newDnsIPv4[0],
+                 dnsConfigBackupPtr->newDnsIPv4[1]);
         RemoveNameserversFromResolvConf(
-                                 interfaceDataBackupPtr->newDnsIPv4[0],
-                                 interfaceDataBackupPtr->newDnsIPv4[1]);
+                                 dnsConfigBackupPtr->newDnsIPv4[0],
+                                 dnsConfigBackupPtr->newDnsIPv4[1]);
 
         // Delete backed up data
-        memset(interfaceDataBackupPtr->newDnsIPv4[0], '\0',
-               sizeof(interfaceDataBackupPtr->newDnsIPv4[0]));
-        memset(interfaceDataBackupPtr->newDnsIPv4[1], '\0',
-               sizeof(interfaceDataBackupPtr->newDnsIPv4[1]));
+        memset(dnsConfigBackupPtr->newDnsIPv4[0], '\0',
+               sizeof(dnsConfigBackupPtr->newDnsIPv4[0]));
+        memset(dnsConfigBackupPtr->newDnsIPv4[1], '\0',
+               sizeof(dnsConfigBackupPtr->newDnsIPv4[1]));
     }
 
-    if (   ('\0' != interfaceDataBackupPtr->newDnsIPv6[0][0])
-        || ('\0' != interfaceDataBackupPtr->newDnsIPv6[1][0])
+    if (   ('\0' != dnsConfigBackupPtr->newDnsIPv6[0][0])
+        || ('\0' != dnsConfigBackupPtr->newDnsIPv6[1][0])
        )
     {
         LE_DEBUG("Removing IPv6 DNS server addresses %s & %s from device",
-                 interfaceDataBackupPtr->newDnsIPv6[0],
-                 interfaceDataBackupPtr->newDnsIPv6[1]);
+                 dnsConfigBackupPtr->newDnsIPv6[0],
+                 dnsConfigBackupPtr->newDnsIPv6[1]);
         RemoveNameserversFromResolvConf(
-                                 interfaceDataBackupPtr->newDnsIPv6[0],
-                                 interfaceDataBackupPtr->newDnsIPv6[1]);
+                                 dnsConfigBackupPtr->newDnsIPv6[0],
+                                 dnsConfigBackupPtr->newDnsIPv6[1]);
 
         // Delete backed up data
-        memset(interfaceDataBackupPtr->newDnsIPv6[0], '\0',
-               sizeof(interfaceDataBackupPtr->newDnsIPv6[0]));
-        memset(interfaceDataBackupPtr->newDnsIPv6[1], '\0',
-               sizeof(interfaceDataBackupPtr->newDnsIPv6[1]));
+        memset(dnsConfigBackupPtr->newDnsIPv6[0], '\0',
+               sizeof(dnsConfigBackupPtr->newDnsIPv6[0]));
+        memset(dnsConfigBackupPtr->newDnsIPv6[1], '\0',
+               sizeof(dnsConfigBackupPtr->newDnsIPv6[1]));
     }
 }
 

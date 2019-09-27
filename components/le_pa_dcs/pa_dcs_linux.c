@@ -303,41 +303,41 @@ static le_result_t RemoveNameserversFromResolvConf
 
 //--------------------------------------------------------------------------------------------------
 /**
- * Write the DNS configuration into /etc/resolv.conf
+ * Add the provided DNS configurations into /etc/resolv.conf. An empty string in any of the 2
+ * input arguments means that it has no DNS address to add in that field. And this function's
+ * caller should have blocked the case in having both inputs empty.
  *
  * @return
  *      LE_OK           Function succeed
  *      LE_DUPLICATE    Function found no need to add as the given inputs are already set in
- *      LE_UNSUPPORTED  Function not supported by the target
  *      LE_FAULT        Function failed
  */
 //--------------------------------------------------------------------------------------------------
-static le_result_t AddNameserversToResolvConf
+le_result_t pa_dcs_SetDnsNameServers
 (
-    const char* dns1Ptr,    ///< [IN] Pointer on first DNS address
-    const char* dns2Ptr     ///< [IN] Pointer on second DNS address
+    const char* dns1Ptr,    ///< [IN] Pointer to 1st DNS address; empty string means nothing to add
+    const char* dns2Ptr,    ///< [IN] Pointer to 2nd DNS address; empty string means nothing to add
+    bool* isDns1Added,      ///< [OUT] Whether the 1st DNS address is added or not
+    bool* isDns2Added       ///< [OUT] Whether the 2nd DNS address is added or not
 )
 {
-    bool addDns1 = true;
-    bool addDns2 = true;
-
     LE_INFO("Set DNS '%s' '%s'", dns1Ptr, dns2Ptr);
-
-    addDns1 = ('\0' != dns1Ptr[0]);
-    addDns2 = ('\0' != dns2Ptr[0]);
 
     // Look for entries to add in the existing file
     char* resolvConfSourcePtr = ReadResolvConf();
 
-    if (NULL != resolvConfSourcePtr)
+    *isDns1Added = ('\0' != dns1Ptr[0]);
+    *isDns2Added = ('\0' != dns2Ptr[0]);
+    if (resolvConfSourcePtr)
     {
         char* currentLinePtr = resolvConfSourcePtr;
         int currentLinePos = 0;
 
-        // For each line in source file
+        // Parse each line for the 2 DNS server addresses given in the inputs and set
+        // isDns1Added and isDnssAdded accordingly to indicate whether each is to be added
         while (true)
         {
-            if (   ('\0' == currentLinePtr[currentLinePos])
+            if (('\0' == currentLinePtr[currentLinePos])
                 || ('\n' == currentLinePtr[currentLinePos])
                )
             {
@@ -347,12 +347,12 @@ static le_result_t AddNameserversToResolvConf
                 if (NULL != strstr(currentLinePtr, dns1Ptr))
                 {
                     LE_INFO("DNS 1 '%s' found in file", dns1Ptr);
-                    addDns1 = false;
+                    *isDns1Added = false;
                 }
                 else if (NULL != strstr(currentLinePtr, dns2Ptr))
                 {
                     LE_INFO("DNS 2 '%s' found in file", dns2Ptr);
-                    addDns2 = false;
+                    *isDns2Added = false;
                 }
 
                 if ('\0' == sourceLineEnd)
@@ -373,7 +373,7 @@ static le_result_t AddNameserversToResolvConf
         }
     }
 
-    if (!addDns1 && !addDns2)
+    if (!*isDns1Added && !*isDns2Added)
     {
         // No need to change the file
         LE_DEBUG("No need to change the file");
@@ -393,11 +393,12 @@ static le_result_t AddNameserversToResolvConf
         umask(oldMask);
 
         LE_WARN("fopen on /etc/resolv.conf failed");
+        *isDns1Added = *isDns2Added = false;
         return LE_FAULT;
     }
 
     // Set DNS 1 if needed
-    if (addDns1 && (fprintf(resolvConfPtr, "nameserver %s\n", dns1Ptr) < 0))
+    if (*isDns1Added && (fprintf(resolvConfPtr, "nameserver %s\n", dns1Ptr) < 0))
     {
         // restore old mask
         umask(oldMask);
@@ -407,11 +408,12 @@ static le_result_t AddNameserversToResolvConf
         {
             LE_WARN("fclose failed");
         }
+        *isDns1Added = *isDns2Added = false;
         return LE_FAULT;
     }
 
     // Set DNS 2 if needed
-    if (addDns2 && (fprintf(resolvConfPtr, "nameserver %s\n", dns2Ptr) < 0))
+    if (*isDns2Added && (fprintf(resolvConfPtr, "nameserver %s\n", dns2Ptr) < 0))
     {
         // restore old mask
         umask(oldMask);
@@ -421,6 +423,7 @@ static le_result_t AddNameserversToResolvConf
         {
             LE_WARN("fclose failed");
         }
+        *isDns2Added = false;
         return LE_FAULT;
     }
 
@@ -494,26 +497,6 @@ LE_SHARED le_result_t pa_dcs_GetDhcpLeaseFilePath
     {
         return LE_OK;
     }
-}
-
-//--------------------------------------------------------------------------------------------------
-/**
- * Set the DNS configuration
- *
- * @return
- *      LE_OK           Function succeed
- *      LE_DUPLICATE    Function found no need to add as the given inputs are already set in
- *      LE_UNSUPPORTED  Function not supported by the target
- *      LE_FAULT        Function failed
- */
-//--------------------------------------------------------------------------------------------------
-le_result_t pa_dcs_SetDnsNameServers
-(
-    const char* dns1Ptr,    ///< [IN] Pointer on first DNS address
-    const char* dns2Ptr     ///< [IN] Pointer on second DNS address
-)
-{
-    return AddNameserversToResolvConf(dns1Ptr, dns2Ptr);
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1375,40 +1358,37 @@ void pa_dcs_RestoreInitialDnsNameServers
     pa_dcs_DnsBackup_t* dnsConfigBackupPtr
 )
 {
-    if (   ('\0' != dnsConfigBackupPtr->newDnsIPv4[0][0])
-        || ('\0' != dnsConfigBackupPtr->newDnsIPv4[1][0])
-       )
+    le_result_t ret;
+    if (dnsConfigBackupPtr->setDnsV4ToSystem[0] || dnsConfigBackupPtr->setDnsV4ToSystem[1])
     {
-        LE_DEBUG("Removing IPv4 DNS server addresses %s & %s from device",
-                 dnsConfigBackupPtr->newDnsIPv4[0],
-                 dnsConfigBackupPtr->newDnsIPv4[1]);
-        RemoveNameserversFromResolvConf(
-                                 dnsConfigBackupPtr->newDnsIPv4[0],
-                                 dnsConfigBackupPtr->newDnsIPv4[1]);
-
-        // Delete backed up data
-        memset(dnsConfigBackupPtr->newDnsIPv4[0], '\0',
-               sizeof(dnsConfigBackupPtr->newDnsIPv4[0]));
-        memset(dnsConfigBackupPtr->newDnsIPv4[1], '\0',
-               sizeof(dnsConfigBackupPtr->newDnsIPv4[1]));
+        ret = RemoveNameserversFromResolvConf(dnsConfigBackupPtr->dnsIPv4[0],
+                                              dnsConfigBackupPtr->dnsIPv4[1]);
+        if (ret != LE_OK)
+        {
+            LE_ERROR("Failed to deconfigure IPv4 DNS addresses %s & %s from device",
+                     dnsConfigBackupPtr->dnsIPv4[0], dnsConfigBackupPtr->dnsIPv4[1]);
+        }
+        else
+        {
+            LE_DEBUG("Succeeded to deconfigure IPv4 DNS addresses %s & %s from device",
+                     dnsConfigBackupPtr->dnsIPv4[0], dnsConfigBackupPtr->dnsIPv4[1]);
+        }
     }
 
-    if (   ('\0' != dnsConfigBackupPtr->newDnsIPv6[0][0])
-        || ('\0' != dnsConfigBackupPtr->newDnsIPv6[1][0])
-       )
+    if (dnsConfigBackupPtr->setDnsV6ToSystem[0] || dnsConfigBackupPtr->setDnsV6ToSystem[1])
     {
-        LE_DEBUG("Removing IPv6 DNS server addresses %s & %s from device",
-                 dnsConfigBackupPtr->newDnsIPv6[0],
-                 dnsConfigBackupPtr->newDnsIPv6[1]);
-        RemoveNameserversFromResolvConf(
-                                 dnsConfigBackupPtr->newDnsIPv6[0],
-                                 dnsConfigBackupPtr->newDnsIPv6[1]);
-
-        // Delete backed up data
-        memset(dnsConfigBackupPtr->newDnsIPv6[0], '\0',
-               sizeof(dnsConfigBackupPtr->newDnsIPv6[0]));
-        memset(dnsConfigBackupPtr->newDnsIPv6[1], '\0',
-               sizeof(dnsConfigBackupPtr->newDnsIPv6[1]));
+        ret = RemoveNameserversFromResolvConf(dnsConfigBackupPtr->dnsIPv6[0],
+                                              dnsConfigBackupPtr->dnsIPv6[1]);
+        if (ret != LE_OK)
+        {
+            LE_ERROR("Failed to deconfigure IPv6 DNS addresses %s & %s from device",
+                     dnsConfigBackupPtr->dnsIPv6[0], dnsConfigBackupPtr->dnsIPv6[1]);
+        }
+        else
+        {
+            LE_DEBUG("Succeeded to deconfigure IPv6 DNS addresses %s & %s from device",
+                     dnsConfigBackupPtr->dnsIPv6[0], dnsConfigBackupPtr->dnsIPv6[1]);
+        }
     }
 }
 

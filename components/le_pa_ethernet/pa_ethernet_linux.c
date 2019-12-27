@@ -135,7 +135,7 @@ static le_result_t GetTechFromInterface
     if (NULL == fd)
     {
         LE_ERROR("Failed to run command:\"%s\" errno:%d %s",
-                 command, errno, strerror(errno));
+                 command, errno, LE_ERRNO_TXT(errno));
         return result;
     }
 
@@ -249,7 +249,7 @@ le_result_t pa_ethernet_GetChannelList
         LE_ERROR("Failed to run command:\"%s\" errno:%d %s",
                  COMMAND_READ_ETHERNET_CHANNEL,
                  errno,
-                 strerror(errno));
+                 LE_ERRNO_TXT(errno));
         return LE_FAULT;
     }
 
@@ -508,7 +508,7 @@ static le_result_t NetlinkSocketInit
     NetLinkSocket = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_ROUTE);
     if (NetLinkSocket == -1)
     {
-        LE_ERROR("Failed to create socket for Ethernet event: %s", strerror(errno));
+        LE_ERROR("Failed to create socket for Ethernet event: %s", LE_ERRNO_TXT(errno));
         return LE_FAULT;
     }
 
@@ -520,7 +520,7 @@ static le_result_t NetlinkSocketInit
     ret = bind(NetLinkSocket, (struct sockaddr*) &SocketAddress, sizeof(SocketAddress));
     if (ret == -1)
     {
-        LE_ERROR("Failed to bind netlink socket: %s", strerror(errno));
+        LE_ERROR("Failed to bind netlink socket: %s", LE_ERRNO_TXT(errno));
         close(NetLinkSocket);
         return LE_FAULT;
     }

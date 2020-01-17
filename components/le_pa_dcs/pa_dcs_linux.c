@@ -751,7 +751,7 @@ le_result_t pa_dcs_StopDhcp
                    && (retry <= RETRY))
             {
                 retry++;
-                sleep(1 << retry);
+                le_thread_Sleep(1 << retry);
                 systemResult = system(systemCmd);
             }
             if (!WIFEXITED(systemResult) || (0 != WEXITSTATUS(systemResult)))
